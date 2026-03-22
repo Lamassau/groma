@@ -1,0 +1,32 @@
+# Local Resource Configuration
+# Infrastructure sizing (CPU/memory) for the local environment.
+# Tune these independently of application configuration.
+
+services:
+  web:
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "1Gi"
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+
+  api:
+    resources:
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+
+databases:
+  mysql:
+    storageSize: "10Gi"
+
+  mongodb:
+    storageSize: "5Gi"
+
+  redis:
+    storageSize: "1Gi"

@@ -1,0 +1,43 @@
+{
+  "name": "@k0s-dev/infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CDK8s infrastructure charts for the local k0s dev cluster",
+  "scripts": {
+    "import": "echo 'cdk8s import disabled: using committed src/lib/k8s.ts'",
+    "build": "tsc --noEmit",
+    "synth": "cdk8s synth",
+    "synth:local": "APP_ENV=local cdk8s synth",
+    "synth:dev": "APP_ENV=dev cdk8s synth",
+    "synth:staging": "APP_ENV=staging cdk8s synth",
+    "synth:prod": "APP_ENV=prod cdk8s synth",
+    "clean": "rm -rf dist imports out",
+    "watch": "tsc --watch",
+    "test": "jest",
+    "test:cov": "jest --coverage"
+  },
+  "jest": {
+    "preset": "ts-jest",
+    "testEnvironment": "node",
+    "testMatch": ["**/test/**/*.spec.ts"],
+    "moduleFileExtensions": ["ts", "js", "json"],
+    "transform": {
+      "^.+\\.ts$": "ts-jest"
+    }
+  },
+  "dependencies": {
+    "cdk8s": "^2.68.0",
+    "constructs": "^10.4.0",
+    "js-yaml": "^4.1.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/js-yaml": "^4.0.0",
+    "@types/node": "^22.0.0",
+    "cdk8s-cli": "^2.198.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.6",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.6.0"
+  }
+}

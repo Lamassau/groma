@@ -1,0 +1,33 @@
+# Dev Resource Configuration
+# Infrastructure sizing (CPU/memory) for the dev environment.
+# Slightly higher than local to reflect shared cluster usage.
+# Tune these independently of application configuration.
+
+services:
+  web:
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+
+  api:
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+
+databases:
+  mysql:
+    storageSize: "20Gi"
+
+  mongodb:
+    storageSize: "10Gi"
+
+  redis:
+    storageSize: "2Gi"

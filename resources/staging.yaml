@@ -1,0 +1,32 @@
+# Staging Resource Configuration
+# Infrastructure sizing (CPU/memory/storage) for the staging environment.
+# Higher than dev to catch resource-related issues before production.
+
+services:
+  web:
+    resources:
+      limits:
+        cpu: "1000m"
+        memory: "1Gi"
+      requests:
+        cpu: "250m"
+        memory: "512Mi"
+
+  api:
+    resources:
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+
+databases:
+  mysql:
+    storageSize: "50Gi"
+
+  mongodb:
+    storageSize: "20Gi"
+
+  redis:
+    storageSize: "4Gi"

@@ -1,0 +1,32 @@
+# Production Resource Configuration
+# Infrastructure sizing (CPU/memory/storage) for the production environment.
+# Tuned from staging load-test data. Adjust limits as traffic grows.
+
+services:
+  web:
+    resources:
+      limits:
+        cpu: "2000m"
+        memory: "2Gi"
+      requests:
+        cpu: "500m"
+        memory: "512Mi"
+
+  api:
+    resources:
+      limits:
+        cpu: "4000m"
+        memory: "4Gi"
+      requests:
+        cpu: "1000m"
+        memory: "1Gi"
+
+databases:
+  mysql:
+    storageSize: "200Gi"
+
+  mongodb:
+    storageSize: "100Gi"
+
+  redis:
+    storageSize: "8Gi"
