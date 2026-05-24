@@ -1,0 +1,9 @@
+export const PORTS = {
+  MYSQL: 3306,
+  MONGODB: 27017,
+  REDIS: 6379,
+  VALKEY: 6379,
+  HTTP: 80,
+  HTTPS: 443,
+  TRAEFIK_DASHBOARD: 8080,
+} as const;

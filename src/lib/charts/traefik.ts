@@ -67,7 +67,6 @@ export class TraefikChart extends Chart {
             "services",
             "endpoints",
             "secrets",
-            "nodes",
             "namespaces",
           ],
           verbs: ["get", "list", "watch"],
@@ -134,10 +133,21 @@ export class TraefikChart extends Chart {
           metadata: { labels },
           spec: {
             serviceAccountName: "traefik",
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 65532,
+              fsGroup: 65532,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             containers: [
               {
                 name: "traefik",
                 image,
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  readOnlyRootFilesystem: true,
+                  capabilities: { drop: ["ALL"], add: ["NET_BIND_SERVICE"] },
+                },
                 args: [
                   "--api.dashboard=true",
                   "--api.insecure=true",
@@ -168,6 +178,15 @@ export class TraefikChart extends Chart {
                     protocol: "TCP",
                   },
                 ],
+                startupProbe: {
+                  httpGet: {
+                    path: "/ping",
+                    port: IntOrString.fromNumber(8080),
+                  },
+                  initialDelaySeconds: 2,
+                  periodSeconds: 5,
+                  failureThreshold: 20,
+                },
                 readinessProbe: {
                   httpGet: {
                     path: "/ping",

@@ -9,12 +9,14 @@ import {
   MariaDbBackup,
   MongoDatabase,
   MySQLDatabase,
+  NamespaceNetworkPolicies,
   RedisCache,
   ValkeyCache,
-  WebService
+  WebService,
 } from "../constructs";
+import { PORTS } from "../core/ports";
 import { FullStackConfig } from "../core/types";
-import { Ingress, Namespace } from "../k8s";
+import { Ingress, LimitRange, Namespace, Quantity, ResourceQuota } from "../k8s";
 
 /**
  * Full-stack sample chart demonstrating the complete pattern.
@@ -48,9 +50,58 @@ export class FullStackChart extends Chart {
     const cfg = props.config;
     const ns = cfg.namespace;
 
-    // ── 1. Namespace ──
+    // ── 1. Namespace (with Pod Security Standards) ──
     new Namespace(this, "ns", {
-      metadata: { name: ns },
+      metadata: {
+        name: ns,
+        labels: {
+          "pod-security.kubernetes.io/enforce":
+            cfg.environment === "prod" ? "restricted" : "baseline",
+          "pod-security.kubernetes.io/warn": "restricted",
+        },
+      },
+    });
+
+    // ── 1a. LimitRange — safety net for containers missing resource specs ──
+    new LimitRange(this, "default-limits", {
+      metadata: { name: "default-limits", namespace: ns },
+      spec: {
+        limits: [
+          {
+            type: "Container",
+            default: {
+              cpu: Quantity.fromString("500m"),
+              memory: Quantity.fromString("512Mi"),
+            },
+            defaultRequest: {
+              cpu: Quantity.fromString("100m"),
+              memory: Quantity.fromString("128Mi"),
+            },
+          },
+        ],
+      },
+    });
+
+    // ── 1b. ResourceQuota — prevent runaway consumption in shared clusters ──
+    new ResourceQuota(this, "quota", {
+      metadata: { name: "resource-quota", namespace: ns },
+      spec: {
+        hard: {
+          "requests.cpu": Quantity.fromString(
+            cfg.environment === "prod" ? "8" : "4",
+          ),
+          "requests.memory": Quantity.fromString(
+            cfg.environment === "prod" ? "16Gi" : "8Gi",
+          ),
+          "limits.cpu": Quantity.fromString(
+            cfg.environment === "prod" ? "16" : "8",
+          ),
+          "limits.memory": Quantity.fromString(
+            cfg.environment === "prod" ? "32Gi" : "16Gi",
+          ),
+          persistentvolumeclaims: Quantity.fromString("10"),
+        },
+      },
     });
 
     // ── 2. App Config (non-secret) ──
@@ -292,9 +343,18 @@ export class FullStackChart extends Chart {
       },
     });
 
-    // ── 9. Horizontal Pod Autoscaler (staging + production) ──
-    // Scale the API automatically when CPU exceeds 70%.
-    // minReplicas matches the static replica count so HPA never scales below it.
+    // ── 9. NetworkPolicies (default-deny + explicit allow per service) ──
+    new NamespaceNetworkPolicies(this, "netpol", {
+      namespace: ns,
+      appName: cfg.appName,
+      apiPort: cfg.services.api.port,
+      webPort: cfg.services.web.port,
+      mysqlPort: PORTS.MYSQL,
+      mongoPort: PORTS.MONGODB,
+      cachePort: PORTS.REDIS,
+    });
+
+    // ── 10. Horizontal Pod Autoscaler (staging + production) ──
     if (cfg.environment === "staging" || cfg.environment === "prod") {
       const apiReplicas = cfg.services.api.replicas;
       new AppHpa(this, "api-hpa", {
@@ -314,26 +374,26 @@ export class FullStackChart extends Chart {
       });
     }
 
-    // ── 10. PodDisruptionBudgets (staging + production) ──
-    // Ensures at least one API and one web pod remains available during
-    // voluntary disruptions (node drains, cluster upgrades).
+    // ── 11. PodDisruptionBudgets (staging + production) ──
     if (cfg.environment === "staging" || cfg.environment === "prod") {
       new AppPdb(this, "api-pdb", {
         namespace: ns,
         selectorKey: "app",
         selectorValue: "api",
-        minAvailable: 1,
+        replicas: cfg.services.api.replicas,
+        maxUnavailable: 1,
       });
 
       new AppPdb(this, "web-pdb", {
         namespace: ns,
         selectorKey: "app",
         selectorValue: "web",
-        minAvailable: 1,
+        replicas: cfg.services.web.replicas,
+        maxUnavailable: 1,
       });
     }
 
-    // ── 11. Automated database backups (staging + production) ──
+    // ── 13. Automated database backups (staging + production) ──
     // Daily mysqldump → gzip → S3 upload with 30-day retention.
     // Requires a Kubernetes Secret named "<appName>-s3-credentials" with:
     //   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
@@ -355,7 +415,7 @@ export class FullStackChart extends Chart {
       });
     }
 
-    // ── 12. Development tools ──
+    // ── 14. Development tools ──
     // new DatabaseAdmin(this, "whodb", {
     //   namespace: ns,
     //   appName: cfg.appName,

@@ -1,37 +1,39 @@
-/**
- * Application Service Constructs
- * Reusable constructs for web services, APIs, and other application components
- */
-
 import { Construct } from "constructs";
 import { ServiceConfig } from "../core/types";
 import { Deployment, IntOrString, Quantity, Service } from "../k8s";
+import { appLabels } from "../utils/labels";
 
 export interface ApplicationServiceProps {
   namespace: string;
   appName: string;
   config: ServiceConfig;
-  /** Optional: Override container command */
   command?: string[];
-  /** Optional: Environment variables to inject */
   env?: Record<string, any>;
-  /** Optional: envFrom references (ConfigMaps, Secrets) */
   envFrom?: Array<{
     configMapRef?: { name: string };
     secretRef?: { name: string };
   }>;
-  /** Optional: Service type override */
   serviceType?: "ClusterIP" | "NodePort" | "LoadBalancer";
-  /** Optional: Additional labels */
   labels?: Record<string, string>;
-  /** Optional: Node port for NodePort services */
   nodePort?: number;
-  /** Optional: Init containers to run before the main container starts */
   initContainers?: any[];
 }
 
+const POD_SECURITY_CONTEXT = {
+  runAsNonRoot: true,
+  runAsUser: 1000,
+  fsGroup: 2000,
+  seccompProfile: { type: "RuntimeDefault" },
+};
+
+const CONTAINER_SECURITY_CONTEXT = {
+  allowPrivilegeEscalation: false,
+  readOnlyRootFilesystem: true,
+  capabilities: { drop: ["ALL"] },
+};
+
 /**
- * Generic application service construct
+ * Generic application service construct.
  * Can be used for APIs, web frontends, workers, etc.
  */
 export class ApplicationService extends Construct {
@@ -46,26 +48,18 @@ export class ApplicationService extends Construct {
     this.deploymentName = `${id}-deployment`;
     this.port = props.config.port;
 
-    const labels = {
+    const component = props.labels?.tier ?? "application";
+    const baseLabels = appLabels(props.appName, component, {
       app: id,
-      component: "application",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
+    const selectorLabels = { app: id };
 
     // Build environment variables array
-    const envVars: Array<{
-      name: string;
-      value?: string;
-      valueFrom?: any;
-    }> = [];
-
-    // Track keys already added to avoid duplicates (props.env and props.config.env
-    // both originate from the same services.<name>.env YAML field when called from
-    // FullStackChart, so iterating both causes duplicate container env entries).
+    const envVars: Array<{ name: string; value?: string; valueFrom?: any }> =
+      [];
     const addedKeys = new Set<string>();
 
-    // Add individual environment variables
     if (props.env) {
       Object.entries(props.env).forEach(([key, value]) => {
         if (typeof value === "string") {
@@ -79,7 +73,6 @@ export class ApplicationService extends Construct {
       });
     }
 
-    // Add config-specific environment variables, skipping any already added above.
     if (props.config.env) {
       Object.entries(props.config.env).forEach(([key, value]) => {
         if (!addedKeys.has(key)) {
@@ -88,40 +81,54 @@ export class ApplicationService extends Construct {
       });
     }
 
-    // Create deployment
+    const healthCheckPath = props.config.healthCheck;
+    const replicas = props.config.replicas;
+
     new Deployment(this, "deployment", {
       metadata: {
         name: this.deploymentName,
         namespace: props.namespace,
-        labels,
+        labels: baseLabels,
       },
       spec: {
-        replicas: props.config.replicas,
-        selector: {
-          matchLabels: { app: id },
-        },
+        replicas,
+        selector: { matchLabels: selectorLabels },
         template: {
-          metadata: {
-            labels: { app: id },
-          },
+          metadata: { labels: { ...selectorLabels, ...baseLabels } },
           spec: {
+            securityContext: POD_SECURITY_CONTEXT,
+            terminationGracePeriodSeconds: 30,
             ...(props.initContainers && props.initContainers.length > 0
               ? { initContainers: props.initContainers }
+              : {}),
+            ...(replicas > 1
+              ? {
+                  topologySpreadConstraints: [
+                    {
+                      maxSkew: 1,
+                      topologyKey: "kubernetes.io/hostname",
+                      whenUnsatisfiable: "DoNotSchedule",
+                      labelSelector: { matchLabels: selectorLabels },
+                    },
+                  ],
+                }
               : {}),
             containers: [
               {
                 name: id,
                 image: props.config.image,
-                imagePullPolicy: props.config.imagePullPolicy ?? "IfNotPresent",
+                imagePullPolicy:
+                  props.config.imagePullPolicy ?? "IfNotPresent",
+                securityContext: CONTAINER_SECURITY_CONTEXT,
+                lifecycle: {
+                  preStop: {
+                    exec: { command: ["/bin/sh", "-c", "sleep 5"] },
+                  },
+                },
                 ...(props.command && props.command.length > 0
                   ? { command: props.command }
                   : {}),
-                ports: [
-                  {
-                    name: "http",
-                    containerPort: this.port,
-                  },
-                ],
+                ports: [{ name: "http", containerPort: this.port }],
                 ...(envVars.length > 0 ? { env: envVars } : {}),
                 ...(props.envFrom && props.envFrom.length > 0
                   ? { envFrom: props.envFrom }
@@ -156,22 +163,29 @@ export class ApplicationService extends Construct {
                       },
                     }
                   : {}),
-                ...(props.config.healthCheck
+                ...(healthCheckPath
                   ? {
-                      // Readiness probe: checks DB connectivity before accepting traffic
+                      startupProbe: {
+                        httpGet: {
+                          path: healthCheckPath,
+                          port: IntOrString.fromNumber(this.port),
+                        },
+                        initialDelaySeconds: 5,
+                        periodSeconds: 10,
+                        failureThreshold: 30,
+                      },
                       readinessProbe: {
                         httpGet: {
-                          path: props.config.healthCheck.replace(/\/?$/, '/ready'),
+                          path: healthCheckPath.replace(/\/?$/, "/ready"),
                           port: IntOrString.fromNumber(this.port),
                         },
                         initialDelaySeconds: 10,
                         periodSeconds: 5,
                         failureThreshold: 3,
                       },
-                      // Liveness probe: lightweight check — just confirms process is alive
                       livenessProbe: {
                         httpGet: {
-                          path: props.config.healthCheck.replace(/\/?$/, '/live'),
+                          path: healthCheckPath.replace(/\/?$/, "/live"),
                           port: IntOrString.fromNumber(this.port),
                         },
                         initialDelaySeconds: 30,
@@ -182,13 +196,11 @@ export class ApplicationService extends Construct {
                   : {}),
               },
             ],
-            ...(labels ? { labels } : {}),
           },
         },
       },
     });
 
-    // Create service
     const serviceSpec: any = {
       type: props.serviceType || "ClusterIP",
       ports: [
@@ -201,22 +213,19 @@ export class ApplicationService extends Construct {
             : {}),
         },
       ],
-      selector: { app: id },
+      selector: selectorLabels,
     };
 
     new Service(this, "service", {
       metadata: {
         name: this.serviceName,
         namespace: props.namespace,
-        labels,
+        labels: baseLabels,
       },
       spec: serviceSpec,
     });
   }
 
-  /**
-   * Get service connection information for other services
-   */
   getConnectionInfo(): { host: string; port: number; url: string } {
     return {
       host: this.serviceName,
@@ -231,19 +240,13 @@ export class ApplicationService extends Construct {
  */
 export class ApiService extends ApplicationService {
   constructor(scope: Construct, id: string, props: ApplicationServiceProps) {
-    // Set default health check for APIs
-    const config = {
-      ...props.config,
-      healthCheck: props.config.healthCheck || "/health",
-    };
-
     super(scope, id, {
       ...props,
-      config,
-      labels: {
-        tier: "api",
-        ...props.labels,
+      config: {
+        ...props.config,
+        healthCheck: props.config.healthCheck || "/health",
       },
+      labels: { tier: "api", ...props.labels },
     });
   }
 }
@@ -253,20 +256,14 @@ export class ApiService extends ApplicationService {
  */
 export class WebService extends ApplicationService {
   constructor(scope: Construct, id: string, props: ApplicationServiceProps) {
-    // Set default health check for web frontends
-    const config = {
-      ...props.config,
-      healthCheck: props.config.healthCheck || "/",
-      port: props.config.port || 80,
-    };
-
     super(scope, id, {
       ...props,
-      config,
-      labels: {
-        tier: "frontend",
-        ...props.labels,
+      config: {
+        ...props.config,
+        healthCheck: props.config.healthCheck || "/",
+        port: props.config.port || 80,
       },
+      labels: { tier: "frontend", ...props.labels },
     });
   }
 }

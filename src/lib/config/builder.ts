@@ -1,7 +1,4 @@
-/**
- * Configuration utilities for loading and transforming configuration files
- */
-
+import { randomBytes } from "crypto";
 import * as fs from "fs";
 import * as yaml from "js-yaml";
 import * as path from "path";
@@ -184,44 +181,51 @@ export function loadInfraConfig(
 }
 
 /**
- * Generate environment-specific passwords
- * In production, these should come from a secure secret management system
+ * Generate a cryptographically-secure random password.
+ *
+ * For local/dev this is called at synth time and embedded in the manifest.
+ * For staging/prod credentials MUST come from a secrets manager (External
+ * Secrets Operator, Vault, AWS Secrets Manager) — never from this function.
  */
-export function generatePassword(env: Environment, service: string): string {
-  // This is a simple implementation for demo purposes
-  // In production, use proper secret generation/rotation
-  const passwords: Record<Environment, Record<string, string>> = {
-    local: {
-      mysql: "dev-mysql-password",
-      mongodb: "dev-mongo-password",
-      redis: "dev-redis-password",
-      jwt: "dev-jwt-secret",
-      session: "dev-session-secret",
-    },
-    dev: {
-      mysql: "dev-mysql-password",
-      mongodb: "dev-mongo-password",
-      redis: "dev-redis-password",
-      jwt: "dev-jwt-secret",
-      session: "dev-session-secret",
-    },
-    staging: {
-      mysql: "staging-secure-mysql-password",
-      mongodb: "staging-secure-mongo-password",
-      redis: "staging-secure-redis-password",
-      jwt: "staging-secure-jwt-secret",
-      session: "staging-secure-session-secret",
-    },
-    prod: {
-      mysql: "prod-very-secure-mysql-password",
-      mongodb: "prod-very-secure-mongo-password",
-      redis: "prod-very-secure-redis-password",
-      jwt: "prod-very-secure-jwt-secret",
-      session: "prod-very-secure-session-secret",
-    },
-  };
+export function generatePassword(length = 24): string {
+  return randomBytes(length).toString("base64url").slice(0, length);
+}
 
-  return passwords[env][service] || `${env}-${service}-changeme`;
+/**
+ * Assert that a CPU string is non-zero/non-empty so resource validation
+ * catches misconfigured manifests before they reach the cluster.
+ */
+function assertPositiveCpu(val: string | undefined, ctx: string): void {
+  if (!val || val === "0" || val === "0m") {
+    throw new Error(`${ctx}: cpu must be a non-zero value (e.g. "100m", "0.5")`);
+  }
+}
+
+/**
+ * Assert that a memory string is non-zero/non-empty.
+ */
+function assertPositiveMemory(val: string | undefined, ctx: string): void {
+  if (!val || val === "0") {
+    throw new Error(`${ctx}: memory must be a non-zero value (e.g. "128Mi", "1Gi")`);
+  }
+}
+
+/**
+ * Validate that resource limits/requests are sane before synthesis.
+ */
+function validateResources(
+  resources: { limits?: { cpu: string; memory: string }; requests?: { cpu: string; memory: string } } | undefined,
+  ctx: string,
+): void {
+  if (!resources) throw new Error(`${ctx}: resources block is required`);
+  if (resources.limits) {
+    assertPositiveCpu(resources.limits.cpu, `${ctx}.limits.cpu`);
+    assertPositiveMemory(resources.limits.memory, `${ctx}.limits.memory`);
+  }
+  if (resources.requests) {
+    assertPositiveCpu(resources.requests.cpu, `${ctx}.requests.cpu`);
+    assertPositiveMemory(resources.requests.memory, `${ctx}.requests.memory`);
+  }
 }
 
 /**
@@ -307,6 +311,10 @@ export function buildFullStackConfig(
     dbRes("redis").storageSize,
     "databases.redis.storageSize (in resources yaml)",
   );
+
+  // ── Validate resources (fail fast before synthesis reaches constructs) ────
+  validateResources(apiResources, "services.api.resources");
+  validateResources(webResources, "services.web.resources");
 
   // ── Database credentials (must be in env yaml) ─────────────────────────────
   const mysqlCreds = {

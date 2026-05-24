@@ -12,6 +12,7 @@ import {
   Quantity,
   Service,
 } from "../k8s";
+import { PORTS } from "../core/ports";
 import { AppSecret } from "./config";
 
 export interface DatabaseProps {
@@ -125,7 +126,7 @@ export class MySQLDatabase extends BaseDatabase {
   private readonly dbImage: string;
 
   constructor(scope: Construct, id: string, props: DatabaseProps) {
-    super(scope, id, props, props.config.port || 3306);
+    super(scope, id, props, props.config.port || PORTS.MYSQL);
 
     this.dbImage = props.config.image || "mariadb:10.11";
 
@@ -188,7 +189,7 @@ export class MySQLDatabase extends BaseDatabase {
         labels,
       },
       spec: {
-        replicas: 1, // Databases should typically be single replica for data consistency
+        replicas: 1,
         selector: {
           matchLabels: { app: id },
         },
@@ -197,10 +198,20 @@ export class MySQLDatabase extends BaseDatabase {
             labels: { app: id },
           },
           spec: {
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 999,
+              fsGroup: 999,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             containers: [
               {
                 name: "mysql",
                 image: this.dbImage,
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  capabilities: { drop: ["ALL"] },
+                },
                 ports: [
                   {
                     name: "mysql",
@@ -320,7 +331,7 @@ export class MongoDatabase extends BaseDatabase {
   private readonly dbImage: string;
 
   constructor(scope: Construct, id: string, props: DatabaseProps) {
-    super(scope, id, props, props.config.port || 27017);
+    super(scope, id, props, props.config.port || PORTS.MONGODB);
 
     this.dbImage = props.config.image || "mongo:7";
 
@@ -348,10 +359,20 @@ export class MongoDatabase extends BaseDatabase {
             labels: { app: id },
           },
           spec: {
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 999,
+              fsGroup: 999,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             containers: [
               {
                 name: "mongodb",
                 image: this.dbImage,
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  capabilities: { drop: ["ALL"] },
+                },
                 ports: [
                   {
                     name: "mongodb",

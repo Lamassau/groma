@@ -12,7 +12,14 @@ import {
     Quantity,
     Service,
 } from "../k8s";
+import { PORTS } from "../core/ports";
 import { AppSecret } from "./config";
+
+const CACHE_SECURITY_CONTEXT = {
+  allowPrivilegeEscalation: false,
+  readOnlyRootFilesystem: true,
+  capabilities: { drop: ["ALL"] as string[] },
+};
 
 export interface CacheProps {
   namespace: string;
@@ -108,7 +115,7 @@ export class RedisCache extends BaseCache {
   private readonly cacheImage: string;
 
   constructor(scope: Construct, id: string, props: CacheProps) {
-    super(scope, id, props, props.config.port || 6379);
+    super(scope, id, props, props.config.port || PORTS.REDIS);
     this.cacheImage = props.config.image || "redis:7-alpine";
 
     const labels = {
@@ -129,7 +136,7 @@ export class RedisCache extends BaseCache {
         labels,
       },
       spec: {
-        replicas: 1, // Cache systems typically run single replica
+        replicas: 1,
         selector: {
           matchLabels: { app: id },
         },
@@ -138,10 +145,17 @@ export class RedisCache extends BaseCache {
             labels: { app: id },
           },
           spec: {
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 999,
+              fsGroup: 999,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             containers: [
               {
                 name: "redis",
                 image: props.config.image || "redis:7-alpine",
+                securityContext: CACHE_SECURITY_CONTEXT,
                 ports: [
                   {
                     name: "redis",
@@ -251,7 +265,7 @@ export class ValkeyCache extends BaseCache {
   private readonly cacheImage: string;
 
   constructor(scope: Construct, id: string, props: CacheProps) {
-    super(scope, id, props, props.config.port || 6379);
+    super(scope, id, props, props.config.port || PORTS.VALKEY);
     this.cacheImage = props.config.image || "valkey/valkey:7-alpine";
 
     const labels = {
@@ -281,10 +295,17 @@ export class ValkeyCache extends BaseCache {
             labels: { app: id },
           },
           spec: {
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 999,
+              fsGroup: 999,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             containers: [
               {
                 name: "valkey",
                 image: props.config.image || "valkey/valkey:7-alpine",
+                securityContext: CACHE_SECURITY_CONTEXT,
                 ports: [
                   {
                     name: "valkey",

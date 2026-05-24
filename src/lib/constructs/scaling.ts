@@ -1,41 +1,44 @@
-/**
- * Scaling Constructs
- * HorizontalPodAutoscaler and PodDisruptionBudget for production-grade deployments
- */
-
 import { Construct } from "constructs";
-import { HorizontalPodAutoscaler, IntOrString, PodDisruptionBudget } from "../k8s";
+import {
+  HorizontalPodAutoscalerV2,
+  IntOrString,
+  MetricSpecV2,
+  PodDisruptionBudget,
+} from "../k8s";
 
 // ─── HPA ─────────────────────────────────────────────────────────────────────
 
 export interface HpaProps {
-  /** Kubernetes namespace */
   namespace: string;
-  /** Deployment name to scale (e.g. "api-deployment") */
   deploymentName: string;
-  /** Minimum number of pod replicas */
   minReplicas: number;
-  /** Maximum number of pod replicas */
   maxReplicas: number;
-  /**
-   * CPU utilisation percentage that triggers scale-out.
-   * Defaults to 70 (%) — scale out when average CPU exceeds 70 %.
-   */
+  /** CPU utilisation % that triggers scale-out. Defaults to 70. */
   targetCpuUtilizationPercentage?: number;
 }
 
 /**
- * HorizontalPodAutoscaler construct.
- *
- * Automatically scales the target Deployment between [minReplicas, maxReplicas]
- * based on CPU utilisation.  Requires the Kubernetes Metrics Server to be
- * deployed in the cluster.
+ * HPA using autoscaling/v2 (stable since Kubernetes 1.23).
+ * Requires Metrics Server in the cluster.
  */
 export class AppHpa extends Construct {
   constructor(scope: Construct, id: string, props: HpaProps) {
     super(scope, id);
 
-    new HorizontalPodAutoscaler(this, "hpa", {
+    const cpuTarget = props.targetCpuUtilizationPercentage ?? 70;
+
+    const cpuMetric: MetricSpecV2 = {
+      type: "Resource",
+      resource: {
+        name: "cpu",
+        target: {
+          type: "Utilization",
+          averageUtilization: cpuTarget,
+        },
+      },
+    };
+
+    new HorizontalPodAutoscalerV2(this, "hpa", {
       metadata: {
         name: `${props.deploymentName}-hpa`,
         namespace: props.namespace,
@@ -48,8 +51,7 @@ export class AppHpa extends Construct {
         },
         minReplicas: props.minReplicas,
         maxReplicas: props.maxReplicas,
-        targetCpuUtilizationPercentage:
-          props.targetCpuUtilizationPercentage ?? 70,
+        metrics: [cpuMetric],
       },
     });
   }
@@ -58,18 +60,17 @@ export class AppHpa extends Construct {
 // ─── PodDisruptionBudget ──────────────────────────────────────────────────────
 
 export interface PdbProps {
-  /** Kubernetes namespace */
   namespace: string;
-  /** Label selector key used to match pods (e.g. "app") */
   selectorKey: string;
-  /** Label selector value used to match pods (e.g. "api") */
   selectorValue: string;
   /**
-   * Minimum number of pods that must remain available during voluntary
-   * disruptions (node drains, rolling updates, etc.).
-   *
+   * Number of replicas on the target Deployment — used to guard against
+   * minAvailable values that would deadlock rolling updates.
+   */
+  replicas?: number;
+  /**
    * Provide either `minAvailable` OR `maxUnavailable` — not both.
-   * Defaults to minAvailable: 1.
+   * Defaults to maxUnavailable: 1 (safe for single-replica deployments).
    */
   minAvailable?: number | string;
   maxUnavailable?: number | string;
@@ -77,10 +78,8 @@ export interface PdbProps {
 
 /**
  * PodDisruptionBudget construct.
- *
- * Ensures that voluntary disruptions (cluster upgrades, node drains) never
- * take too many pods offline simultaneously.  Required for zero-downtime
- * rolling deployments in production.
+ * Defaults to `maxUnavailable: 1` rather than `minAvailable: 1` to avoid
+ * blocking rolling updates on single-replica deployments.
  */
 export class AppPdb extends Construct {
   constructor(scope: Construct, id: string, props: PdbProps) {
@@ -92,8 +91,23 @@ export class AppPdb extends Construct {
       );
     }
 
-    const minAvailable =
-      props.minAvailable !== undefined ? props.minAvailable : 1;
+    // Guard: minAvailable >= replicas deadlocks rolling updates
+    if (
+      props.replicas !== undefined &&
+      typeof props.minAvailable === "number" &&
+      props.minAvailable >= props.replicas
+    ) {
+      throw new Error(
+        `PDB "${props.selectorValue}": minAvailable (${props.minAvailable}) must be less than replicas (${props.replicas}). ` +
+          `Use maxUnavailable: 1 instead, or increase replica count.`,
+      );
+    }
+
+    // Default to maxUnavailable: 1 — safe even for single-replica deployments
+    const useMaxUnavailable =
+      props.minAvailable === undefined && props.maxUnavailable === undefined;
+    const maxUnavailable = useMaxUnavailable ? 1 : props.maxUnavailable;
+    const minAvailable = props.minAvailable;
 
     new PodDisruptionBudget(this, "pdb", {
       metadata: {
@@ -104,18 +118,18 @@ export class AppPdb extends Construct {
         selector: {
           matchLabels: { [props.selectorKey]: props.selectorValue },
         },
-        ...(props.maxUnavailable !== undefined
+        ...(maxUnavailable !== undefined
           ? {
               maxUnavailable:
-                typeof props.maxUnavailable === "number"
-                  ? IntOrString.fromNumber(props.maxUnavailable)
-                  : IntOrString.fromString(props.maxUnavailable),
+                typeof maxUnavailable === "number"
+                  ? IntOrString.fromNumber(maxUnavailable)
+                  : IntOrString.fromString(maxUnavailable),
             }
           : {
               minAvailable:
                 typeof minAvailable === "number"
-                  ? IntOrString.fromNumber(minAvailable)
-                  : IntOrString.fromString(minAvailable),
+                  ? IntOrString.fromNumber(minAvailable!)
+                  : IntOrString.fromString(minAvailable as string),
             }),
       },
     });

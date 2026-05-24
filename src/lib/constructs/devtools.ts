@@ -81,10 +81,21 @@ export class DatabaseAdmin extends Construct {
             labels: { app: id },
           },
           spec: {
+            securityContext: {
+              runAsNonRoot: true,
+              runAsUser: 1000,
+              fsGroup: 2000,
+              seccompProfile: { type: "RuntimeDefault" },
+            },
             containers: [
               {
                 name: "whodb",
                 image: props.config.dbAdmin.image || "clidey/whodb:latest",
+                securityContext: {
+                  allowPrivilegeEscalation: false,
+                  readOnlyRootFilesystem: true,
+                  capabilities: { drop: ["ALL"] },
+                },
                 imagePullPolicy:
                   props.config.dbAdmin.imagePullPolicy || "IfNotPresent",
                 ports: [
