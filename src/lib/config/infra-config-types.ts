@@ -49,6 +49,26 @@ export interface EnvAppConfig {
   environment?: string;
   namespace?: string;
   domain?: string;
+  /** Controls how Kubernetes Secrets are emitted for this environment.
+   *  - "inline" (default): values from appSecrets are written directly into
+   *    a Kubernetes Secret manifest. Fine for local/dev.
+   *  - "external-secrets": emits ExternalSecret CRDs (External Secrets
+   *    Operator). Requires `externalSecretStore` to be set and the ESO
+   *    operator to be installed in the cluster.
+   */
+  secretsBackend?: "inline" | "external-secrets";
+  /**
+   * Required when secretsBackend === "external-secrets".
+   * Describes which SecretStore or ClusterSecretStore to reference.
+   */
+  externalSecretStore?: {
+    name: string;
+    kind?: "SecretStore" | "ClusterSecretStore";
+    /** Remote key prefix in the backend (e.g. "/prod/futbalio") */
+    remoteKeyPrefix?: string;
+    /** How often ESO should refresh the secret (default "1h") */
+    refreshInterval?: string;
+  };
   /** Non-sensitive env vars → Kubernetes ConfigMap, injected into all services */
   appConfig?: Record<string, string>;
   /** Sensitive values → Kubernetes Secret, injected into backend services */
@@ -90,6 +110,10 @@ export interface EnvAppConfig {
     enabled?: boolean;
     className?: string;
     annotations?: Record<string, string>;
+    tls?: {
+      secretName?: string;
+      hosts?: string[];
+    };
   };
 }
 

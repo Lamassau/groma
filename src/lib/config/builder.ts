@@ -246,6 +246,10 @@ export function buildFullStackConfig(
     enableMongoDB?: boolean;
     enableRedis?: boolean;
     configDir?: string;
+    /** Names of additional services to load (e.g. ["worker", "scheduler"]).
+     *  Each must have a matching services.{name} entry in config/{env}/.env and
+     *  optionally resources in resources/{env}.yaml. */
+    additionalServices?: string[];
   } = {},
 ): FullStackConfig {
   const env = (process.env.APP_ENV || "local") as Environment;
@@ -375,6 +379,10 @@ export function buildFullStackConfig(
   );
   const ingressAnnotations = envApp.ingress?.annotations ?? {};
 
+  // ── Secrets backend ────────────────────────────────────────────────────────
+  const secretsBackend = envApp.secretsBackend ?? "inline";
+  const externalSecretStore = envApp.externalSecretStore;
+
   // ── Build FullStackConfig ──────────────────────────────────────────────────────
   const config: FullStackConfig = {
     environment: env,
@@ -383,6 +391,8 @@ export function buildFullStackConfig(
     appName: configuredAppName,
     appConfig,
     appSecrets,
+    secretsBackend,
+    ...(externalSecretStore ? { externalSecretStore } : {}),
 
     database: {
       mysql: {
@@ -467,6 +477,36 @@ export function buildFullStackConfig(
         imagePullPolicy: svcApp("web")
           .imagePullPolicy as ServiceConfig["imagePullPolicy"],
       },
+      ...Object.fromEntries(
+        (options.additionalServices ?? []).map((svcName) => {
+          const svcCfg = svcApp(svcName);
+          const svcResCfg = svcRes(svcName);
+          return [
+            svcName,
+            {
+              image: `${registry}/${configuredAppName}-${svcName}:${version}`,
+              replicas: required(
+                svcCfg.replicas,
+                `services.${svcName}.replicas`,
+              ),
+              port: common.services?.[svcName]?.port ?? 3000,
+              command: required(svcCfg.command, `services.${svcName}.command`),
+              resources: svcResCfg.resources,
+              env: svcCfg.env,
+              healthCheck:
+                svcCfg.healthCheck ??
+                common.services?.[svcName]?.healthCheck ??
+                "/health",
+              serviceType: svcCfg.serviceType as ServiceConfig["serviceType"],
+              nodePort: svcCfg.nodePort,
+              imagePullPolicy:
+                svcCfg.imagePullPolicy as ServiceConfig["imagePullPolicy"],
+              debugPort: svcCfg.debugPort,
+              debugNodePort: svcCfg.debugNodePort,
+            } satisfies ServiceConfig,
+          ];
+        }),
+      ),
     },
 
     devTools: {
@@ -483,6 +523,14 @@ export function buildFullStackConfig(
       enabled: ingressEnabled,
       className: ingressClassName,
       annotations: ingressAnnotations,
+      ...(envApp.ingress?.tls?.secretName
+        ? {
+            tls: {
+              secretName: envApp.ingress.tls.secretName,
+              hosts: envApp.ingress.tls.hosts ?? [],
+            },
+          }
+        : {}),
     },
   };
 

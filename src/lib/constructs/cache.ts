@@ -14,6 +14,7 @@ import {
 } from "../k8s";
 import { PORTS } from "../core/ports";
 import { AppSecret } from "./config";
+import { appLabels } from "../utils/labels";
 
 const CACHE_SECURITY_CONTEXT = {
   allowPrivilegeEscalation: false,
@@ -42,12 +43,10 @@ abstract class BaseCache extends Construct {
     this.serviceName = `${id}-service`;
     this.port = port;
 
-    const labels = {
+    const labels = appLabels(props.appName, "cache", {
       app: id,
-      component: "cache",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
 
     // Create secret for cache credentials
     this.secret = new AppSecret(this, "secret", {
@@ -118,12 +117,11 @@ export class RedisCache extends BaseCache {
     super(scope, id, props, props.config.port || PORTS.REDIS);
     this.cacheImage = props.config.image || "redis:7-alpine";
 
-    const labels = {
+    const labels = appLabels(props.appName, "cache", {
       app: id,
       component: "redis",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
 
     const hasPersistence =
       props.config.storageSize && props.config.storageSize !== "0";
@@ -268,12 +266,11 @@ export class ValkeyCache extends BaseCache {
     super(scope, id, props, props.config.port || PORTS.VALKEY);
     this.cacheImage = props.config.image || "valkey/valkey:7-alpine";
 
-    const labels = {
+    const labels = appLabels(props.appName, "cache", {
       app: id,
       component: "valkey",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
 
     const hasPersistence =
       props.config.storageSize && props.config.storageSize !== "0";

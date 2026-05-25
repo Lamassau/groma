@@ -2,10 +2,12 @@ import { ApiObject, Chart, ChartProps } from "cdk8s";
 import { Construct } from "constructs";
 import {
   ApiService,
+  ApplicationService,
   AppConfigMap,
   AppSecret,
   AppHpa,
   AppPdb,
+  DatabaseAdmin,
   MariaDbBackup,
   MongoDatabase,
   MySQLDatabase,
@@ -116,6 +118,16 @@ export class FullStackChart extends Chart {
       namespace: ns,
       name: "app-secrets",
       data: cfg.appSecrets,
+      ...(cfg.secretsBackend === "external-secrets" && cfg.externalSecretStore
+        ? {
+            externalSecretRef: {
+              storeName: cfg.externalSecretStore.name,
+              storeKind: cfg.externalSecretStore.kind,
+              remoteKeyPrefix: cfg.externalSecretStore.remoteKeyPrefix,
+              refreshInterval: cfg.externalSecretStore.refreshInterval,
+            },
+          }
+        : {}),
     });
 
     // ── 4-6. Datastores ──
@@ -196,6 +208,24 @@ export class FullStackChart extends Chart {
       nodePort: cfg.services.web.nodePort,
     });
 
+    // ── 8b. Additional services (worker, scheduler, etc.) ──
+    for (const [svcName, svcCfg] of Object.entries(cfg.services)) {
+      if (svcName === "api" || svcName === "web") continue;
+      new ApplicationService(this, svcName, {
+        namespace: ns,
+        appName: cfg.appName,
+        config: svcCfg,
+        command: svcCfg.command,
+        envFrom: [appConfig.envFromRef(), appSecrets.envFromRef()],
+        env: {
+          ...apiConnectionEnv,
+          ...(svcCfg.env ?? {}),
+        },
+        serviceType: svcCfg.serviceType,
+        nodePort: svcCfg.nodePort,
+      });
+    }
+
     new Ingress(this, "api-ingress", {
       metadata: {
         name: `${cfg.appName}-api`,
@@ -206,6 +236,18 @@ export class FullStackChart extends Chart {
       },
       spec: {
         ingressClassName: cfg.ingress.className,
+        ...(cfg.ingress.tls
+          ? {
+              tls: [
+                {
+                  secretName: cfg.ingress.tls.secretName,
+                  hosts: cfg.ingress.tls.hosts.length > 0
+                    ? cfg.ingress.tls.hosts
+                    : [`api.${cfg.domain}`],
+                },
+              ],
+            }
+          : {}),
         rules: [
           {
             host: `api.${cfg.domain}`,
@@ -240,6 +282,18 @@ export class FullStackChart extends Chart {
       },
       spec: {
         ingressClassName: cfg.ingress.className,
+        ...(cfg.ingress.tls
+          ? {
+              tls: [
+                {
+                  secretName: cfg.ingress.tls.secretName,
+                  hosts: cfg.ingress.tls.hosts.length > 0
+                    ? cfg.ingress.tls.hosts
+                    : [`web.${cfg.domain}`],
+                },
+              ],
+            }
+          : {}),
         rules: [
           {
             host: `web.${cfg.domain}`,
@@ -416,50 +470,52 @@ export class FullStackChart extends Chart {
     }
 
     // ── 14. Development tools ──
-    // new DatabaseAdmin(this, "whodb", {
-    //   namespace: ns,
-    //   appName: cfg.appName,
-    //   config: cfg.devTools,
-    //   databases: [
-    //     ...(mysql
-    //       ? [
-    //           {
-    //             type: "mysql" as const,
-    //             host: mysql.serviceName,
-    //             port: mysql.port,
-    //             username: mysqlConfig?.credentials.username,
-    //             password: mysqlConfig?.credentials.password,
-    //             database: mysqlConfig?.credentials.database,
-    //           },
-    //         ]
-    //       : []),
-    //     ...(mongo
-    //       ? [
-    //           {
-    //             type: "mongodb" as const,
-    //             host: mongo.serviceName,
-    //             port: mongo.port,
-    //             username: mongoConfig?.credentials.username,
-    //             password: mongoConfig?.credentials.password,
-    //             database: mongoConfig?.credentials.database,
-    //           },
-    //         ]
-    //       : []),
-    //     ...(cache
-    //       ? [
-    //           {
-    //             type: (valkeyConfig?.enabled ? "valkey" : "redis") as
-    //               | "valkey"
-    //               | "redis",
-    //             host: cache.serviceName,
-    //             port: cache.port,
-    //             password:
-    //               valkeyConfig?.credentials.password ??
-    //               redisConfig?.credentials.password,
-    //           },
-    //         ]
-    //       : []),
-    //   ],
-    // });
+    if (cfg.devTools.dbAdmin.enabled && cfg.environment !== "prod") {
+      new DatabaseAdmin(this, "whodb", {
+        namespace: ns,
+        appName: cfg.appName,
+        config: cfg.devTools,
+        databases: [
+          ...(mysql
+            ? [
+                {
+                  type: "mysql" as const,
+                  host: mysql.serviceName,
+                  port: mysql.port,
+                  username: mysqlConfig?.credentials.username,
+                  password: mysqlConfig?.credentials.password,
+                  database: mysqlConfig?.credentials.database,
+                },
+              ]
+            : []),
+          ...(mongo
+            ? [
+                {
+                  type: "mongodb" as const,
+                  host: mongo.serviceName,
+                  port: mongo.port,
+                  username: mongoConfig?.credentials.username,
+                  password: mongoConfig?.credentials.password,
+                  database: mongoConfig?.credentials.database,
+                },
+              ]
+            : []),
+          ...(cache
+            ? [
+                {
+                  type: (valkeyConfig?.enabled ? "valkey" : "redis") as
+                    | "valkey"
+                    | "redis",
+                  host: cache.serviceName,
+                  port: cache.port,
+                  password:
+                    valkeyConfig?.credentials.password ??
+                    redisConfig?.credentials.password,
+                },
+              ]
+            : []),
+        ],
+      });
+    }
   }
 }
