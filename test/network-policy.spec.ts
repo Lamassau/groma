@@ -29,10 +29,10 @@ describe("NamespaceNetworkPolicies", () => {
     new NamespaceNetworkPolicies(chart, "np", defaultProps);
     const manifests = Testing.synth(chart);
     const policies: any[] = manifests.filter((m: any) => m.kind === "NetworkPolicy");
-    const trafikToApi = policies.find((p: any) =>
+    const traefikToApi = policies.find((p: any) =>
       p.spec.podSelector?.matchLabels?.["app.kubernetes.io/component"] === "api",
     );
-    expect(trafikToApi).toBeDefined();
+    expect(traefikToApi).toBeDefined();
   });
 
   it("MySQL allow rule selects pods by app.kubernetes.io/component=mysql", () => {

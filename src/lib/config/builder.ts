@@ -248,7 +248,7 @@ export function buildFullStackConfig(
     configDir?: string;
     /** Names of additional services to load (e.g. ["worker", "scheduler"]).
      *  Each must have a matching services.{name} entry in config/{env}/.env and
-     *  optionally resources in resources/{env}.yaml. */
+     *  optionally resources in resources/{env}.yaml (layer 3 sizing file). */
     additionalServices?: string[];
   } = {},
 ): FullStackConfig {

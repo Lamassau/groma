@@ -299,7 +299,7 @@ These gaps exist today and should be addressed before using this in staging or p
 
 ### Config system
 
-- **`config/common.yaml` has `app.name: futbalio`** — this leftover placeholder should be updated to `futbalio` or removed (the actual app name is resolved from `devenv.yaml`).
+- **`config/common.yaml` has `app.name: futbalio`** — this leftover note in the Known Issues section is resolved; the app name is correctly resolved from `devenv.yaml`.
 
 ### Testing and operations
 
