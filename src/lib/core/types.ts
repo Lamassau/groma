@@ -99,6 +99,15 @@ export interface IngressConfig {
   enabled: boolean;
   className: string;
   annotations?: Record<string, string>;
+  /** Optional TLS configuration. When set, a `tls:` block is added to Ingress
+   *  resources. Pair with a cert-manager ClusterIssuer annotation to automate
+   *  certificate provisioning. */
+  tls?: {
+    /** Name of the Kubernetes Secret that holds (or will hold) the TLS cert */
+    secretName: string;
+    /** Hostnames covered by the certificate */
+    hosts: string[];
+  };
 }
 
 /**
@@ -150,4 +159,20 @@ export interface FullStackConfig extends BaseInfraConfig {
   devTools: DevToolsConfig;
   /** Ingress configuration */
   ingress: IngressConfig;
+  /**
+   * Controls how Kubernetes Secrets are emitted.
+   * - "inline" (default): values written directly into a Secret manifest.
+   * - "external-secrets": ExternalSecret CRDs emitted instead (requires ESO).
+   */
+  secretsBackend: "inline" | "external-secrets";
+  /**
+   * Required when secretsBackend === "external-secrets".
+   * Passed through to AppSecret constructs.
+   */
+  externalSecretStore?: {
+    name: string;
+    kind?: "SecretStore" | "ClusterSecretStore";
+    remoteKeyPrefix?: string;
+    refreshInterval?: string;
+  };
 }

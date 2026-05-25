@@ -290,8 +290,8 @@ These gaps exist today and should be addressed before using this in staging or p
 
 ### Security
 
-- **Inline secrets in YAML** — `appSecrets` values are stored as plain text. For staging and prod these must come from an external secret manager (e.g. Kubernetes [External Secrets Operator](https://external-secrets.io/) + AWS Secrets Manager / Vault). The builder needs a `secretRef` pattern instead of inline values.
-- **No TLS support** — the ingress construct has no `tls` block or cert-manager annotations. HTTPS is not currently supported.
+- **Inline secrets in YAML for local/dev** — `appSecrets` values are stored as plain text for `local` and `dev` environments. For staging and prod, set `secretsBackend=external-secrets` in your environment `.env` and configure `externalSecretStore.*` to point at your AWS Secrets Manager / Vault `ClusterSecretStore`. See `config/staging/.env` for an example.
+- **TLS** — The ingress construct supports TLS via `INGRESS__TLS__SECRET_NAME`. Pair with a cert-manager `ClusterIssuer` annotation (see `config/staging/.env`) for automated certificate provisioning.
 
 ### Missing environments
 
@@ -299,15 +299,75 @@ These gaps exist today and should be addressed before using this in staging or p
 
 ### Config system
 
-- **`config/common.yaml` has `app.name: futbalio`** — this leftover placeholder should be updated to `futbalio` or removed (the actual app name is resolved from `devenv.yaml`).
-- **`debugPort` / `debugNodePort` are stored in `FullStackConfig` but never wired up** — no construct actually creates a second NodePort service for the debug port. This needs to be implemented in `src/lib/constructs/service.ts`.
-- **Only `api` and `web` are supported as services** — the builder hardcodes these two names. Adding a `worker` or `scheduler` requires TypeScript changes, not just YAML.
+- **`config/common.yaml` has `app.name: futbalio`** — this leftover note in the Known Issues section is resolved; the app name is correctly resolved from `devenv.yaml`.
 
 ### Testing and operations
 
-- **Zero unit tests** — CDK8s provides a `Testing.synth()` API for asserting generated YAML. The constructs have no coverage at all.
 - **No diff step** — the workflow applies directly with no `kubectl diff` against the live cluster, which is risky for dev and above.
-- **`dist/` is gitignored** — there is no history of what was actually applied to each environment. Consider committing synthesized manifests or using a GitOps tool (Flux, ArgoCD).
+
+---
+
+## Manifest History and GitOps Strategy
+
+`dist/` is gitignored by default so raw generated YAML never sits in the main branch.
+Two patterns are supported — choose one per environment:
+
+### Option A: GitOps with ArgoCD or Flux (recommended for staging / prod)
+
+1. After every merged PR, CI runs `pnpm run synth:{env}` and commits the generated `dist/` to
+   a **dedicated `infra-manifests` branch** (or a separate repository) with the commit SHA in the message.
+2. ArgoCD or Flux watches that branch and applies changes to the cluster automatically.
+3. You get full diff history, automated rollback (`git revert`), and PR-gated manifest reviews.
+
+```bash
+# CI step (simplified)
+APP_ENV=staging pnpm run synth:staging
+git add dist/
+git commit -m "chore(infra): staging manifests @ $GITHUB_SHA"
+git push origin infra-manifests
+```
+
+ArgoCD `Application` config example:
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: futbalio-staging
+spec:
+  source:
+    repoURL: https://github.com/your-org/groma
+    targetRevision: infra-manifests
+    path: dist/
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: futbalio-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+### Option B: Direct CI apply (simpler, suitable for local / dev)
+
+1. CI synthesizes and immediately applies:
+
+```bash
+APP_ENV=dev pnpm run synth:dev
+kubectl apply -f dist/
+kubectl rollout status deployment/api-deployment -n futbalio-dev
+```
+
+2. No manifest branch is required, but you lose diff history and rollback capability.
+   Add `kubectl diff -f dist/` before `apply` to surface changes in the CI log.
+
+### Prerequisites for staging / prod
+
+| Prerequisite | Why |
+|---|---|
+| [cert-manager](https://cert-manager.io/docs/installation/) + a `ClusterIssuer` | Automatic TLS certificate provisioning via Let's Encrypt |
+| [External Secrets Operator](https://external-secrets.io/latest/) + a `SecretStore` / `ClusterSecretStore` | Pull credentials from AWS Secrets Manager / Vault instead of embedding them in manifests |
+| ArgoCD **or** Flux | GitOps-based reconciliation from the `infra-manifests` branch |
 
 ---
 

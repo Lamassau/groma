@@ -128,7 +128,12 @@ export class ApplicationService extends Construct {
                 ...(props.command && props.command.length > 0
                   ? { command: props.command }
                   : {}),
-                ports: [{ name: "http", containerPort: this.port }],
+                ports: [
+                  { name: "http", containerPort: this.port },
+                  ...(props.config.debugPort
+                    ? [{ name: "debug", containerPort: props.config.debugPort }]
+                    : []),
+                ],
                 ...(envVars.length > 0 ? { env: envVars } : {}),
                 ...(props.envFrom && props.envFrom.length > 0
                   ? { envFrom: props.envFrom }
@@ -212,6 +217,19 @@ export class ApplicationService extends Construct {
             ? { nodePort: props.nodePort }
             : {}),
         },
+        ...(props.config.debugPort
+          ? [
+              {
+                name: "debug",
+                port: props.config.debugPort,
+                targetPort: IntOrString.fromNumber(props.config.debugPort),
+                ...(props.config.debugNodePort &&
+                props.serviceType === "NodePort"
+                  ? { nodePort: props.config.debugNodePort }
+                  : {}),
+              },
+            ]
+          : []),
       ],
       selector: selectorLabels,
     };

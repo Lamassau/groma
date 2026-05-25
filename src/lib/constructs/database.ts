@@ -14,6 +14,7 @@ import {
 } from "../k8s";
 import { PORTS } from "../core/ports";
 import { AppSecret } from "./config";
+import { appLabels } from "../utils/labels";
 
 export interface DatabaseProps {
   namespace: string;
@@ -44,12 +45,10 @@ abstract class BaseDatabase extends Construct {
     this.hasPersistence =
       !!props.config.storageSize && props.config.storageSize !== "0";
 
-    const labels = {
+    const labels = appLabels(props.appName, "database", {
       app: id,
-      component: "database",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
 
     // Create secret for database credentials
     this.secret = new AppSecret(this, "secret", {
@@ -130,12 +129,10 @@ export class MySQLDatabase extends BaseDatabase {
 
     this.dbImage = props.config.image || "mariadb:10.11";
 
-    const labels = {
+    const labels = appLabels(props.appName, "mysql", {
       app: id,
-      component: "mysql",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
 
     const mysqlVolumeMounts = [
       ...(this.hasPersistence
@@ -335,12 +332,10 @@ export class MongoDatabase extends BaseDatabase {
 
     this.dbImage = props.config.image || "mongo:7";
 
-    const labels = {
+    const labels = appLabels(props.appName, "mongodb", {
       app: id,
-      component: "mongodb",
-      "app.kubernetes.io/part-of": props.appName,
       ...props.labels,
-    };
+    });
 
     // MongoDB Deployment
     new Deployment(this, "deployment", {
