@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: pnpm run test --runInBand
 
+      - name: Remote operations safety tests
+        run: pnpm run test:agent
+
       - name: Compile installable CLI
         run: pnpm run compile
 
@@ -43,7 +46,7 @@ jobs:
           node build/cli.js synth --config examples/compose/groma.yaml --out dist/compose
           node build/cli.js synth --config examples/kubernetes/groma.yaml --out dist/kubernetes
 
-      - name: Exercise two isolated Compose applications
+      - name: Exercise two isolated Compose applications and lifecycle operations
         run: pnpm run test:integration
 
       - name: Verify package contents

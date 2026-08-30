@@ -51,8 +51,8 @@ describe('Deployment configuration boundary', () => {
       expect(()=>loadProject(path.join(dir,'groma.yaml'),'missing')).toThrow(/overlay not found/);
     } finally { fs.rmSync(dir,{recursive:true,force:true}); }
   });
-  it('does not execute a deployment without explicit matching target approval', () => {
-    expect(()=>main(['deploy','--config','examples/compose/groma.yaml'])).toThrow(/expect-target/);
+  it('does not execute a deployment without explicit matching target approval', async () => {
+    await expect(main(['deploy','--config','examples/compose/groma.yaml'])).rejects.toThrow(/expect-target/);
   });
 });
 
@@ -107,8 +107,8 @@ describe('Remote script safety', () => {
 /** Execute real generated Bash, replacing only machine paths and external executables. */
 describe('Release transaction integration (simulated Docker and Caddy)', () => {
   let dir: string, root: string, env: NodeJS.ProcessEnv;
-  const execute = (p: Project, id: string, rollback=false) => spawnSync('bash',['-se'],{
-    input:deployScript(p,id,rollback).replaceAll('/opt/groma',root).replaceAll('/etc/caddy',path.join(dir,'caddy')),
+  const execute = (p: Project, id: string, rollback=false, approved?: {imageLock:string;currentRelease:string|null}) => spawnSync('bash',['-se'],{
+    input:deployScript(p,id,rollback,approved).replaceAll('/opt/groma',root).replaceAll('/etc/caddy',path.join(dir,'caddy')),
     env,encoding:'utf8',
   });
   beforeEach(()=>{
@@ -152,6 +152,15 @@ describe('Release transaction integration (simulated Docker and Caddy)', () => {
     expect(execute(p,'second').status).toBe(0);
     expect(fs.existsSync(path.join(root,'demo-dev/current'))).toBe(true);
     expect(fs.existsSync(path.join(root,'another-dev/current'))).toBe(true);
+  });
+  it('applies the approved lock but rejects a stale planned release', ()=>{
+    const p=fixture(); expect(execute(p,'first').status).toBe(0);
+    const approved={imageLock:'services: {}',currentRelease:'first'};
+    expect(execute(p,'second',false,approved).status).toBe(0);
+    expect(fs.readFileSync(path.join(root,'demo-dev/current/images.lock.yaml'),'utf8')).toBe('services: {}');
+    const stale=execute(p,'third',false,approved);
+    expect(stale.status).not.toBe(0);expect(stale.stderr).toContain('Active release changed since plan');
+    expect(fs.realpathSync(path.join(root,'demo-dev/current'))).toContain('second');
   });
   it('cleans up a failed first deployment without deleting volumes', ()=>{
     fs.writeFileSync(path.join(dir,'fail-health'),'');

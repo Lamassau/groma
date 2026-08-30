@@ -1,0 +1,184 @@
+name: Reusable GROMa build and deploy
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: dev, staging or production; production must have required reviewers
+        required: true
+        type: string
+      expected-target:
+        description: Exact user@host matching the effective GROMa config
+        required: true
+        type: string
+      groma-ref:
+        description: Reviewed 40-character Lamassau/groma commit SHA
+        required: true
+        type: string
+      config-path:
+        type: string
+        default: groma.yaml
+      overlay:
+        description: Optional environments/NAME.yaml overlay
+        type: string
+        default: ''
+      services:
+        description: JSON array of service, context and dockerfile build definitions
+        type: string
+        default: '[{"service":"web","context":".","dockerfile":"Dockerfile"}]'
+    secrets:
+      SSH_PRIVATE_KEY:
+        required: false
+      SSH_KNOWN_HOSTS:
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: groma-${{ github.repository }}-${{ inputs.expected-target }}-${{ inputs.environment }}-${{ inputs.config-path }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.contract.outputs.matrix }}
+      project: ${{ steps.contract.outputs.project }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lamassau/groma
+          ref: ${{ inputs.groma-ref }}
+          path: toolkit
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pnpm install --frozen-lockfile && pnpm run compile
+        working-directory: toolkit
+      - name: Validate build definitions and target
+        id: contract
+        run: node toolkit/scripts/ci-contract.cjs
+        env:
+          APP_ROOT: ${{ github.workspace }}/app
+          GROMA_INPUT: ${{ toJSON(inputs) }}
+      - name: Require production approval policy
+        if: inputs.environment == 'production'
+        uses: actions/github-script@v7
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+        with:
+          script: |
+            const {requireReviewers} = require(process.env.GITHUB_WORKSPACE + '/toolkit/scripts/ci-contract.cjs');
+            const response = await github.rest.repos.getEnvironment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              environment_name: process.env.DEPLOYMENT_ENVIRONMENT
+            });
+            requireReviewers(response.data);
+  build:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.validate.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image coordinates
+        id: coordinates
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}-${SERVICE}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        id: image
+        with:
+          context: app/${{ matrix.context }}
+          file: app/${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.coordinates.outputs.image }}:${{ github.sha }}
+      - name: Record immutable image
+        env:
+          SERVICE: ${{ matrix.service }}
+          IMAGE: ${{ steps.coordinates.outputs.image }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          node -e 'const fs=require("fs"); if(!/^sha256:[a-f0-9]{64}$/.test(process.env.DIGEST)) throw Error("Invalid digest"); fs.mkdirSync("image-records"); fs.writeFileSync("image-records/"+process.env.SERVICE+".json",JSON.stringify({service:process.env.SERVICE,image:process.env.IMAGE+"@"+process.env.DIGEST}));'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: groma-image-${{ inputs.environment }}-${{ needs.validate.outputs.project }}-${{ matrix.service }}
+          path: image-records/*.json
+          retention-days: 7
+  deploy:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: Lamassau/groma
+          ref: ${{ inputs.groma-ref }}
+          path: toolkit
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: pnpm install --frozen-lockfile && pnpm run compile
+        working-directory: toolkit
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: groma-image-${{ inputs.environment }}-${{ needs.validate.outputs.project }}-*
+          path: image-records
+          merge-multiple: true
+      - name: Recheck production approval policy
+        if: inputs.environment == 'production'
+        uses: actions/github-script@v7
+        env:
+          DEPLOYMENT_ENVIRONMENT: ${{ inputs.environment }}
+        with:
+          script: |
+            const {requireReviewers} = require(process.env.GITHUB_WORKSPACE + '/toolkit/scripts/ci-contract.cjs');
+            const response = await github.rest.repos.getEnvironment({owner:context.repo.owner,repo:context.repo.repo,environment_name:process.env.DEPLOYMENT_ENVIRONMENT});
+            requireReviewers(response.data);
+      - name: Deploy pinned images and verify public endpoints
+        run: node toolkit/scripts/ci-deploy.cjs
+        env:
+          APP_ROOT: ${{ github.workspace }}/app
+          IMAGE_DIRECTORY: ${{ github.workspace }}/image-records
+          GROMA_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GROMA_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          GROMA_INPUT: ${{ toJSON(inputs) }}

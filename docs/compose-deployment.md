@@ -37,13 +37,13 @@ Build and push the app image outside GROMa. Authenticate the deployment account 
 
 Provision application secret files separately with restrictive permissions. See configuration.md for file mounts and `_FILE` variables.
 
-Point each public domain at the droplet and permit 80/443 through the cloud firewall. Certificates depend on publicly reachable, correct DNS. GROMa does not change DNS records or verify external HTTPS itself.
+Point each public domain at the droplet and permit 80/443 through the cloud firewall. Certificates depend on publicly reachable, correct DNS. GROMa does not change DNS records. Deployment verifies external HTTPS afterward, and `groma verify` can repeat the checks independently.
 
 Docker-published ports can bypass UFW rules. GROMa publishes only loopback ports and never exposes database ports. Require a current Docker Engine (28 or newer) for localhost publishing isolation fixes; verify cloud firewall rules as defense in depth. See Docker's [firewall documentation](https://docs.docker.com/engine/network/packet-filtering-firewalls/) and [port publishing documentation](https://docs.docker.com/engine/network/port-publishing/).
 
 ## 4. Deploy and inspect
 
-Run validate, doctor, plan, then deploy with the explicit target. Plan is read-only. Compose plan compares the requested Compose file to the last successful GROMa file; it is not a live drift detector and cannot detect a changed registry tag. It does not currently show a separate proxy-file diff, although domains and loopback ports are reported/configured in the project.
+Run validate, doctor, plan, then deploy with the explicit target. Plan is read-only. Compose plan resolves candidate image digests and compares services, routes and storage against the last successful release. It detects moved image tags, but is not a general runtime drift detector. See operations.md for risk acknowledgements.
 
 Deployment holds a host-wide lock, checks domain/port ownership, rejects an unmanaged same-name Compose project, creates a private release directory, validates Compose, resolves image digests into an override, pulls images, and waits for health checks (120 seconds). It updates Caddy only after services are healthy, validates and reloads the proxy, then atomically advances the current symlink.
 
@@ -59,7 +59,7 @@ groma rollback --yes --expect-target deploy@your-host
 
 Rollback reuses the previous successful release. It does not roll back migrations, database contents, secret files or other external dependencies. Use backward-compatible migrations. Back up and test restoration separately before production.
 
-Successful releases live under `/opt/groma/<app>-<environment>/releases`, with current and previous symlinks. Release pruning is manual in this version: preserve current and previous, and do not delete named volumes. Application log output may contain secrets; GROMa does not pretend it can reliably redact arbitrary application logs.
+Successful releases live under `/opt/groma/<app>-<environment>/releases`, with current and previous symlinks. Use `groma prune` to preview release cleanup and add `--execute --yes --expect-target` only after reviewing candidates. Current, previous and in-use releases are protected; named volumes are never deleted. Application log output may contain secrets; GROMa does not pretend it can reliably redact arbitrary application logs.
 
 ## Live acceptance checklist
 

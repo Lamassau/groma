@@ -1,0 +1,22 @@
+# Production is manual AND requires a separate reviewer through GitHub environment protection.
+name: Deploy production
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  packages: write
+jobs:
+  deploy:
+    uses: Lamassau/groma/.github/workflows/deploy.yml@REPLACE_WITH_REVIEWED_GROMA_SHA
+    with:
+      environment: production
+      expected-target: deploy@your-production.example.com
+      groma-ref: REPLACE_WITH_REVIEWED_GROMA_SHA
+      config-path: groma.yaml
+      overlay: production
+      services: >-
+        [{"service":"api","context":".","dockerfile":"api/Dockerfile"},
+         {"service":"web","context":".","dockerfile":"web/Dockerfile"}]
+    # Create the production environment, required reviewers, prevent self-review,
+    # branch restrictions and SSH secrets before enabling this workflow.

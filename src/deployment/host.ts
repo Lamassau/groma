@@ -20,7 +20,7 @@ if ! command -v caddy >/dev/null && ss -H -ltn | awk '$4 ~ /:(80|443)$/ {found=1
 fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg debian-keyring debian-archive-keyring apt-transport-https ufw
+apt-get install -y python3 ca-certificates curl gnupg debian-keyring debian-archive-keyring apt-transport-https ufw
 install -m 0755 -d /etc/apt/keyrings
 if ! command -v docker >/dev/null; then
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc

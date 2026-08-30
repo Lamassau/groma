@@ -7,3 +7,7 @@ yarn.lock
 dist/
 build/
 .env
+
+__pycache__/
+*.pyc
+*.tgz
