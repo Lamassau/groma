@@ -107,6 +107,7 @@ export interface EnvAppConfig {
     };
   };
   ingress?: {
+    mode?: "standard" | "traefik";
     enabled?: boolean;
     className?: string;
     annotations?: Record<string, string>;

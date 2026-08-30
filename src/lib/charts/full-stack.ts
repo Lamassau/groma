@@ -51,6 +51,9 @@ export class FullStackChart extends Chart {
 
     const cfg = props.config;
     const ns = cfg.namespace;
+    if (cfg.secretsBackend === "external-secrets" && !cfg.externalSecretStore?.name) {
+      throw new Error("externalSecretStore.name is required for external-secrets");
+    }
 
     // ── 1. Namespace (with Pod Security Standards) ──
     new Namespace(this, "ns", {
@@ -226,6 +229,7 @@ export class FullStackChart extends Chart {
       });
     }
 
+    if (cfg.ingress.enabled && cfg.ingress.mode !== "traefik") {
     new Ingress(this, "api-ingress", {
       metadata: {
         name: `${cfg.appName}-api`,
@@ -330,6 +334,8 @@ export class FullStackChart extends Chart {
       },
     });
 
+    }
+    if (cfg.ingress.enabled && cfg.ingress.mode === "traefik") {
     // Derive Traefik entryPoints from the router annotation value (comma-separated)
     const traefikEntryPoints = (
       cfg.ingress.annotations?.[
@@ -348,6 +354,7 @@ export class FullStackChart extends Chart {
       },
       spec: {
         entryPoints: traefikEntryPoints,
+        ...(cfg.ingress.tls ? { tls: { secretName: cfg.ingress.tls.secretName } } : {}),
         routes: [
           {
             kind: "Rule",
@@ -372,6 +379,7 @@ export class FullStackChart extends Chart {
       },
       spec: {
         entryPoints: traefikEntryPoints,
+        ...(cfg.ingress.tls ? { tls: { secretName: cfg.ingress.tls.secretName } } : {}),
         routes: [
           {
             kind: "Rule",
@@ -397,6 +405,7 @@ export class FullStackChart extends Chart {
       },
     });
 
+    }
     // ── 9. NetworkPolicies (default-deny + explicit allow per service) ──
     new NamespaceNetworkPolicies(this, "netpol", {
       namespace: ns,

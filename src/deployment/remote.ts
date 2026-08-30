@@ -1,0 +1,116 @@
+import { spawnSync } from 'child_process';
+import { Project, projectName } from './config';
+import { renderCompose, renderCaddy, renderRoutes } from './render';
+
+export const quote = (s: string) => "'" + s.replace(/'/g, "'\\''") + "'";
+export function run(command: string, args: string[], input?: string, capture = false): string {
+  const r = spawnSync(command,args,{input,encoding:'utf8',stdio:[input === undefined ? 'inherit' : 'pipe',capture ? 'pipe':'inherit',capture ? 'pipe':'inherit'],maxBuffer:16*1024*1024});
+  if (r.error) throw r.error;
+  if (r.status !== 0) throw new Error(`${command} failed (exit ${r.status ?? r.signal})${capture ? `: ${r.stderr}` : ''}`);
+  return r.stdout ?? '';
+}
+export function ssh(p: Project, script: string, capture = false): string {
+  return run('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15','-p',String(p.host!.port ?? 22),'--',p.host!.ssh,'bash -se'],script,capture);
+}
+const put = (name: string, data: string) => `printf '%s' ${quote(Buffer.from(data).toString('base64'))} | base64 -d > ${quote(name)}`;
+export function doctorScript(p: Project): string {
+  return `set -eu\ncommand -v ss >/dev/null\n[ "$(docker version --format '{{.Server.Version}}' | cut -d. -f1)" -ge 28 ] || { echo 'Docker Engine 28+ required' >&2; exit 1; }\ndocker info >/dev/null\ndocker compose version\ndocker compose config --help | grep -q -- --lock-image-digests\ndocker compose up --help | grep -q -- --wait-timeout\ncommand -v flock >/dev/null\ntest -d /opt/groma\ntest -w /opt/groma\n${Object.values(p.services).some(s=>s.route) ? 'sudo -n caddy validate --config /etc/caddy/Caddyfile\ngrep -Fxq "import /etc/caddy/groma/*.caddy" /etc/caddy/Caddyfile\nsystemctl is-active --quiet caddy' : ''}\n${Object.values(p.secrets ?? {}).map(s=>`test -r ${quote(s.file!)} && test -f ${quote(s.file!)}`).join('\n')}\n`;
+}
+/** Releases contain references to host secret files, never secret contents. Host-wide lock protects ports and proxy changes. */
+export function deployScript(p: Project, release: string, rollback = false): string {
+  if (!/^[a-zA-Z0-9-]+$/.test(release)) throw new Error('Invalid release identifier');
+  const name = projectName(p), root = `/opt/groma/${name}`;
+  return `set -eu
+umask 077
+exec 9>/opt/groma/.deploy.lock
+flock -w 120 9
+root=${quote(root)}
+mkdir -p "$root/releases"
+old=""
+if [ -L "$root/current" ]; then
+  old=$(readlink -f "$root/current")
+  printf '%s' ${quote(p.name + ':' + p.environment)} | cmp -s "$old/identity" - || { echo 'Project identity collision or missing release metadata' >&2; exit 1; }
+fi
+${rollback ? 'next=$(readlink -f "$root/previous")\ntest -f "$next/compose.yaml"' : `next="$root/releases/${release}"
+mkdir "$next"
+cd "$next"
+${put('identity',p.name + ':' + p.environment)}
+${put('compose.yaml',renderCompose(p))}
+${put('route.caddy',renderCaddy(p))}
+${put('routes.tsv',renderRoutes(p))}
+${put('release.json',JSON.stringify({release,project:name,images:Object.fromEntries(Object.entries(p.services).map(([n,s])=>[n,s.image]))},null,2))}`}
+# Compare all other active GROMa projects before touching containers.
+for manifest in /opt/groma/*/current/routes.tsv; do
+  [ -f "$manifest" ] || continue
+  [ "$manifest" = "$root/current/routes.tsv" ] && continue
+  awk 'NR==FNR {if(NF==2){domains[$1]=1;ports[$2]=1};next} NF==2 && (domains[$1] || ports[$2]) {exit 1}' "$manifest" "$next/routes.tsv" || { echo 'Domain or host port already owned by another GROMa project' >&2; exit 1; }
+done
+compose() {
+  directory="$1"; shift
+  if [ -f "$directory/images.lock.yaml" ]; then
+    docker compose --project-name ${quote(name)} --project-directory "$directory" -f "$directory/compose.yaml" -f "$directory/images.lock.yaml" "$@"
+  else
+    docker compose --project-name ${quote(name)} --project-directory "$directory" -f "$directory/compose.yaml" "$@"
+  fi
+}
+compose "$next" config --quiet
+if [ -z "$old" ] && [ -n "$(docker ps -aq --filter label=com.docker.compose.project=${quote(name)})" ]; then
+  echo 'Existing containers have this project name but no GROMa release record; refusing takeover.' >&2; exit 1
+fi
+while read -r domain port; do
+  [ -n "$port" ] || continue
+  if [ -n "$old" ] && awk -v p="$port" '$2==p {found=1} END {exit !found}' "$old/routes.tsv"; then continue; fi
+  if ss -H -ltn | awk -v p="$port" '$4 ~ ":"p"$" {found=1} END {exit !found}'; then
+    echo "Host port $port is already in use" >&2; exit 1
+  fi
+done < "$next/routes.tsv"
+if [ ! -f "$next/images.lock.yaml" ]; then
+  compose "$next" config --lock-image-digests > "$next/images.lock.tmp"
+  test -s "$next/images.lock.tmp"
+  mv "$next/images.lock.tmp" "$next/images.lock.yaml"
+fi
+compose "$next" pull
+route=/etc/caddy/groma/${name}.caddy
+had_route=0
+proxy_changed=0
+if sudo -n test -f "$route"; then sudo -n cat "$route" > "$next/old-route.caddy"; had_route=1; fi
+recover() {
+  code=$?
+  trap - EXIT
+  if [ "$code" -ne 0 ]; then
+    echo 'Deployment failed; attempting to restore the previous application configuration.' >&2
+    if [ -n "$old" ] && [ -f "$old/compose.yaml" ]; then
+      compose "$old" up -d --remove-orphans --wait --wait-timeout 120 || echo 'Application recovery FAILED; inspect services manually.' >&2
+    else
+      compose "$next" down || echo 'Cleanup FAILED; inspect services manually.' >&2
+    fi
+    if [ "$proxy_changed" = 1 ]; then
+      if [ "$had_route" = 1 ]; then sudo -n install -m 644 "$next/old-route.caddy" "$route"; else sudo -n rm -f "$route"; fi
+      sudo -n systemctl reload caddy || echo 'Proxy recovery FAILED.' >&2
+    fi
+  fi
+  exit "$code"
+}
+trap recover EXIT
+compose "$next" up -d --remove-orphans --wait --wait-timeout 120
+# Reload the proxy only after the application is healthy. Also remove old routes on route deletion.
+if [ -s "$next/route.caddy" ] || [ "$had_route" = 1 ]; then
+  proxy_changed=1
+  sudo -n install -m 644 "$next/route.caddy" "$route"
+  sudo -n caddy validate --config /etc/caddy/Caddyfile
+  sudo -n systemctl reload caddy
+fi
+if [ -n "$old" ] && [ "$old" != "$next" ]; then ln -sfn "$old" "$root/previous.new"; mv -Tf "$root/previous.new" "$root/previous"; fi
+ln -sfn "$next" "$root/current.new"
+mv -Tf "$root/current.new" "$root/current"
+trap - EXIT
+compose "$next" ps
+`;
+}
+export function operationScript(p: Project, operation: 'status'|'logs'|'plan', service?: string): string {
+  const root = `/opt/groma/${projectName(p)}`;
+  const prefix = `set -eu\nroot=${quote(root)}\n`;
+  if (operation === 'plan') return prefix + `if [ -f "$root/current/compose.yaml" ]; then\n${put('/dev/stdout',renderCompose(p))} | diff -u "$root/current/compose.yaml" - || { code=$?; [ "$code" = 1 ] || exit "$code"; }\nelse echo 'New project'; fi\n`;
+  if (service && !Object.hasOwn(p.services,service)) throw new Error(`Unknown service: ${service}`);
+  return prefix + `test -f "$root/current/compose.yaml"\ndocker compose --project-name ${quote(projectName(p))} --project-directory "$root/current" -f "$root/current/compose.yaml" ${operation === 'status' ? 'ps --format json' : `logs --tail 100 --no-color ${service ? quote(service) : ''}`}\n`;
+}

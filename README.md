@@ -1,386 +1,130 @@
-# .infra — CDK8s Infrastructure
+# GROMa
 
-Kubernetes infrastructure defined in TypeScript using **CDK8s**. Generates Kubernetes YAML manifests from a layered config system. No raw YAML to maintain.
+Deploy containerized applications to a **plain Linux server with Docker Compose**, or to an existing **Kubernetes cluster**. DigitalOcean droplets do not need Kubernetes for the Compose target.
 
----
+GROMa provides a versioned application schema, an installable CLI, CDK8s library exports, validation, manifest generation, SSH deployment, HTTPS routing, and release recovery. It does not create cloud servers, build/push application images, register domains, or manage your DNS account.
 
-## How it works
+## Quick start
 
-```
-Config files (.env + YAML)  →  builder.ts  →  CDK8s constructs  →  dist/*.yaml  →  kubectl apply
-```
+Requirements on your workstation: Node.js 20+, pnpm 10.30.3, and OpenSSH. Docker is needed on the target server, not your workstation. Kubernetes commands require local `kubectl`.
 
-1. Three config layers are loaded and merged per environment
-2. The merged config is passed to TypeScript constructs as a typed `FullStackConfig`
-3. `cdk8s synth` (via `ts-node`) generates `dist/` manifests
-4. `kubectl apply -f dist/` deploys to the cluster
-
-`pnpm run build` is **type-check only** (`tsc --noEmit`). No compiled JS is ever emitted into `src/`.
-
----
-
-## Directory structure
-
-```
-.devenv/
-├── config/                           # Configuration files (shared with other tools)
-│   ├── common.env                    # Layer 1 — shared defaults (ports, images)
-│   └── env/
-│       ├── local.env                 # Layer 2 — local app config
-│       ├── dev.env                   # Layer 2 — dev app config
-│       └── resources/
-│           ├── local.yaml            # Layer 3 — local CPU/memory/storage sizing
-│           └── dev.yaml              # Layer 3 — dev CPU/memory/storage sizing
-│
-└── .infra/
-    ├── cdk8s.yaml                    # CDK8s entrypoint (calls ts-node src/main.ts)
-    ├── package.json
-    ├── tsconfig.json
-    │
-    └── src/
-        ├── main.ts                   # CDK8s App entry point
-        ├── futbalio-chart.ts         # App-specific chart (thin wrapper)
-        └── lib/                      # Reusable library (framework-agnostic)
-            ├── k8s.ts                # Committed K8s API types (do not delete)
-            ├── index.ts              # Barrel export
-            ├── charts/
-            │   ├── full-stack.ts     # Reusable full-stack chart pattern
-            │   ├── metallb-config.ts
-            │   └── traefik.ts
-            ├── constructs/
-            │   ├── service.ts        # ApplicationService, ApiService, WebService
-        │   ├── database.ts           # MySQLDatabase, MongoDatabase
-        │   ├── cache.ts              # RedisCache, ValkeyCache
-        │   ├── config.ts             # AppConfigMap, AppSecret
-        │   └── devtools.ts           # DatabaseAdmin (WhoDB)
-        ├── config/
-        │   ├── builder.ts            # Loads + merges config → FullStackConfig
-        │   ├── infra-config-types.ts # Config layer TypeScript types
-        │   └── devenv-types.ts       # devenv.yaml TypeScript types
-        └── core/
-            └── types.ts              # FullStackConfig and all shared interfaces
-```
-
----
-
-## Configuration system
-
-Three config layers are merged in priority order (highest wins):
-
-| Layer         | File                          | What goes here                                                                                    |
-| ------------- | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| 1 — Common    | `config/common.env`           | Shared defaults: ports, DB images                                                                 |
-| 2 — App       | `config/{env}.env`            | App behaviour: replicas, commands, env vars, credentials, ingress                                 |
-| 3 — Resources | `.infra/resources/{env}.yaml` | Infra sizing: CPU, memory, storage. **Keep separate so ops can tune without touching app config** |
-
-All values are **required** — the builder throws a descriptive error if anything is missing, rather than silently using a default.
-
-### Configuration Location
-
-By default, configs are loaded from `.devenv/config/` (one level up from `.infra/`).
-
-Override the config directory location (in priority order):
-
-1. **Pass `configDir` option** to `buildFullStackConfig()`
-2. **Set `INFRA_CONFIG_DIR` environment variable** (absolute path)
-3. **Use default**: `.devenv/config/` relative to project root
-
-Example:
+From this repository:
 
 ```bash
-# Use a custom config directory
-export INFRA_CONFIG_DIR=/path/to/custom/config
-pnpm run synth
+pnpm install --frozen-lockfile
+pnpm run compile
+node build/cli.js init --name my-app
 ```
 
-### `config/common.env`
-
-Service ports, health check paths, and DB image versions shared across all environments:
-
-```env
-SERVICES__API__PORT=3000
-SERVICES__API__HEALTH_CHECK=/api/health
-SERVICES__WEB__PORT=4200
-SERVICES__WEB__HEALTH_CHECK=/
-
-DATABASES__MYSQL__PORT=3306
-DATABASES__MYSQL__IMAGE=mariadb:10.11
-```
-
-### `config/env/{env}.env`
-
-Everything that changes per environment — **two distinct concerns live in this one file**:
-
-- **`APP_CONFIG__*`** → injected into all services as a Kubernetes `ConfigMap`
-- **`APP_SECRETS__*`** → injected into backend services only as a Kubernetes `Secret`
-
-```yaml
-environment: local
-namespace: local
-domain: futbalio.local
-
-appConfig:
-  NODE_ENV: development
-  LOG_LEVEL: debug
-  CORS_ORIGINS: http://web.futbalio.local
-
-appSecrets:
-  JWT_SECRET_KEY: dev-jwt-secret-change-in-production
-  KEYCLOAK_CLIENT_SECRET: your-client-secret
-
-services:
-  api:
-    replicas: 1
-    serviceType: NodePort
-    nodePort: 30300
-    imagePullPolicy: Always
-    command: ["npm", "run", "start:debug"]
-    debugPort: 9229
-    debugNodePort: 30922
-  web:
-    replicas: 1
-    serviceType: NodePort
-    nodePort: 30420
-    imagePullPolicy: Always
-    command: ["pnpm", "run", "serve:ssr:futbalio-web"]
-    env:
-      API_URL: http://api.futbalio.local/api
-
-databases:
-  mysql:
-    enabled: true
-    credentials:
-      database: futbalio
-      username: futbalio_user
-      password: futbalio_pass
-  mongodb:
-    enabled: true
-    credentials:
-      { database: futbalio_dev, username: futbalio, password: dev_pass }
-  redis:
-    enabled: true
-    credentials: { password: redis_pass }
-
-devtools:
-  dbAdmin:
-    enabled: true
-    port: 8080
-
-ingress:
-  enabled: true
-  className: traefik
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-```
-
-### `config/env/resources/{env}.yaml`
-
-CPU/memory limits and storage sizes — kept separate so resource tuning never requires touching app config:
-
-```yaml
-services:
-  api:
-    resources:
-      limits: { cpu: "500m", memory: "512Mi" }
-      requests: { cpu: "100m", memory: "256Mi" }
-  web:
-    resources:
-      limits: { cpu: "500m", memory: "1Gi" }
-      requests: { cpu: "100m", memory: "256Mi" }
-databases:
-  mysql: { storageSize: "10Gi" }
-  mongodb: { storageSize: "5Gi" }
-  redis: { storageSize: "1Gi" }
-```
-
----
-
-## Building and synthesizing
+Edit `groma.yaml`: set the actual SSH target, application image, container port, healthcheck, domain and an unused loopback host port. The generated example is an Nginx demonstration, not your product's image.
 
 ```bash
-cd .devenv/.infra
-pnpm install
+node build/cli.js validate
+node build/cli.js synth
+node build/cli.js host setup > host-setup.sh
+```
 
-# Type-check only (no files emitted)
+Review the setup script. The optional execution mode changes the host, installs software, configures Caddy, grants Docker group membership, and enables UFW. Use it only on a suitable Ubuntu 22.04/24.04 LTS server:
+
+```bash
+node build/cli.js host setup --execute --yes --expect-target deploy@your-droplet.example.com
+```
+
+The SSH account must already exist, have a verified host key in `known_hosts`, and be able to run passwordless sudo. GROMa never creates users, disables host-key verification, or modifies SSH authentication. See [host setup and security](docs/compose-deployment.md) before running this command.
+
+Point the domain's DNS A record at your droplet. Set an AAAA record only if IPv6 is configured correctly. Allow TCP 80/443 through the DigitalOcean firewall, and allow your configured SSH port from your administration addresses.
+
+```bash
+node build/cli.js doctor
+node build/cli.js plan
+node build/cli.js deploy --yes --expect-target deploy@your-droplet.example.com
+node build/cli.js status
+node build/cli.js logs web
+```
+
+Caddy provisions and renews HTTPS certificates when DNS and network access are correct. A successful deployment means Compose services passed running/health checks and Caddy accepted the configuration; it does **not** certify public DNS, certificate issuance, or external reachability. Verify the public URL after deployment.
+
+## Configuration
+
+```yaml
+schemaVersion: 1
+name: my-app
+environment: dev
+profile: shared-dev
+target: compose
+host:
+  ssh: deploy@your-droplet.example.com
+services:
+  web:
+    image: ghcr.io/your-org/my-app:your-release
+    port: 3000
+    healthcheck: [node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    route:
+      domain: dev.example.com
+      hostPort: 18080
+    resources:
+      cpu: 0.5
+      memory: 256Mi
+```
+
+Only services declaring a route publish a port, bound to `127.0.0.1`. Caddy runs on the host and forwards requests to these loopback ports. Every app/environment has its own Compose project, network and named volumes. Databases stay on the application's network. All projects still share one host and failure domain; this is not a security boundary against a hostile workload.
+
+- `command`: argument array overriding the image CMD; image ENTRYPOINT remains intact.
+- `environment`: **non-sensitive strings**; `$` characters are preserved literally in Compose. Do not put secrets here.
+- `healthcheck`: executable argument array available inside the image; no implicit shell. Use `sh -c` explicitly if necessary. Without a check, Compose can only verify that a container is running.
+- `dependsOn`: Compose-only list; referenced services must have healthchecks. Dependency cycles are rejected.
+- `secrets`: selected references mounted at `/run/secrets/<name>`; see the [configuration reference](docs/configuration.md).
+- `volumes`: explicit `persistent` or `ephemeral` mode. Persistent volumes are never deleted by deployment or rollback.
+- Unknown settings, unsupported target options and malformed values fail validation instead of being silently ignored.
+
+See [examples/compose](examples/compose), [examples/kubernetes](examples/kubernetes), and [configuration reference](docs/configuration.md).
+
+## Commands
+
+| Command | Behavior |
+| --- | --- |
+| `init` | Create a starter without overwriting an existing file. |
+| `validate` | Offline schema and consistency checks. |
+| `synth` | Generate manifests without accessing a target. |
+| `doctor` | Check target access and core runtime prerequisites. |
+| `plan` | Read-only Compose configuration diff or live `kubectl diff`. |
+| `deploy` | Explicit target confirmation, apply and wait for health/readiness. |
+| `status` | Inspect the active application's services. |
+| `logs [service]` | Last 100 lines. Application logs may contain sensitive data. |
+| `rollback` | Compose only: restore the previous release's configuration and locked image digests. Does not revert databases or secret file contents. |
+| `host setup` | Print an Ubuntu setup script; remote execution requires `--execute --yes --expect-target`. |
+
+Common options: `--config PATH`, `--env NAME`, `--out PATH`, `--json`. `--json` wraps command output in one object for automation (except the intentionally textual `init`, help and host setup commands).
+
+`--env staging` requires `environments/staging.yaml` alongside your base config. Objects merge recursively; arrays replace. No overlay is guessed. The environment name and resource profile are separate, so staging can use `shared-dev`.
+
+## Kubernetes and existing users
+
+```bash
+node build/cli.js init --target kubernetes --name my-app --config groma-k8s.yaml
+node build/cli.js validate --config groma-k8s.yaml
+```
+
+Set `kubernetes.context`, optional ingress class/TLS secret, and service images. The CLI generates CDK8s API objects for arbitrary services, optional PVCs, existing Secret mounts and standard Ingress. It never installs controllers or a cluster. Kubernetes does not support Compose startup ordering; services must retry dependency connections. Kubernetes apply does not prune removed resources automatically.
+
+The existing `FullStackChart`, database/cache/backup constructs and `.devenv` builder remain exported. Their `pnpm synth:*` commands retain the legacy layout. See [migration notes](docs/migration.md); these legacy constructs and the new generic renderer have different feature sets. The new generic renderer does not implicitly enable legacy autoscaling or backup jobs.
+
+## Distribution and verification
+
+```bash
 pnpm run build
-
-# Synthesize Kubernetes YAML for a specific environment
-pnpm run synth:local     # → APP_ENV=local
-pnpm run synth:dev       # → APP_ENV=dev
-pnpm run synth:staging   # → APP_ENV=staging  ⚠ config files not yet created
-pnpm run synth:prod      # → APP_ENV=prod      ⚠ config files not yet created
-
-# Or inline
-APP_ENV=dev pnpm run synth
+pnpm test --runInBand
+pnpm run compile
+pnpm pack
+# Install the resulting .tgz in another project, or globally:
+npm install -g ./lamassau-groma-0.1.0.tgz
+groma --help
 ```
 
-`APP_ENV` is the highest-priority override — it takes precedence over `build.Environment` and `build.defaultEnvironment` in `devenv.yaml`.
+The package remains private to prevent accidental registry publication; a local/release tarball is installable without copying source files. Releases attach the package and complete, non-secret example manifests.
 
-### Apply to cluster
+CI checks TypeScript, regression tests, example synthesis, package contents, and starts two disposable Compose projects. Run `pnpm run test:integration` only with a disposable local Docker daemon; it never uses SSH. Local shell transaction tests simulate Docker/Caddy and are not a substitute for a live droplet acceptance test.
 
-```bash
-APP_ENV=local pnpm run synth
-kubectl apply -f dist/
+## Scope
 
-# Or use the devenv convenience command
-./devenv deploy
-```
-
----
-
-## Environment comparison
-
-| Config             | `local`       | `dev`               |
-| ------------------ | ------------- | ------------------- |
-| Service type       | NodePort      | ClusterIP           |
-| API replicas       | 1             | 2                   |
-| Image pull policy  | Always        | Always              |
-| API command        | `start:debug` | `node dist/main.js` |
-| Debug port exposed | Yes (9229)    | No                  |
-| Dev tools (WhoDB)  | Enabled       | Enabled             |
-| Secrets source     | Inline YAML   | Inline YAML         |
-
----
-
-## Reusing `src/lib/` in another project
-
-`src/lib/` contains no Futbalio-specific code. To use it in a new project:
-
-1. Copy `src/lib/` into the new project's `.infra/src/lib/`
-2. Create a thin chart wrapper:
-
-```typescript
-// my-app-chart.ts
-import { Construct } from "constructs";
-import { FullStackChartProps, FullStackChart } from "./lib/charts/full-stack";
-
-export class futbalioChart extends FullStackChart {
-  constructor(scope: Construct, id: string, props: FullStackChartProps) {
-    super(scope, id, props);
-    // add app-specific constructs here only if needed
-  }
-}
-```
-
-3. Wire it up in `src/main.ts`:
-
-```typescript
-import { App } from "cdk8s";
-import { futbalioChart } from "./my-app-chart";
-import { buildFullStackConfig, loadDevEnvConfig } from "./lib/config/builder";
-
-const devEnvConfig = loadDevEnvConfig();
-const config = buildFullStackConfig(devEnvConfig, "my-app", {
-  enableMongoDB: true,
-  enableRedis: true,
-});
-
-const app = new App({ outdir: "dist" });
-new futbalioChart(app, "app", { config });
-app.synth();
-```
-
-4. Create `config/{env}.env` and `.infra/resources/{env}.yaml` following the schema above.
-
----
-
-## Known improvements needed
-
-These gaps exist today and should be addressed before using this in staging or production.
-
-### Security
-
-- **Inline secrets in YAML for local/dev** — `appSecrets` values are stored as plain text for `local` and `dev` environments. For staging and prod, set `secretsBackend=external-secrets` in your environment `.env` and configure `externalSecretStore.*` to point at your AWS Secrets Manager / Vault `ClusterSecretStore`. See `config/staging/.env` for an example.
-- **TLS** — The ingress construct supports TLS via `INGRESS__TLS__SECRET_NAME`. Pair with a cert-manager `ClusterIssuer` annotation (see `config/staging/.env`) for automated certificate provisioning.
-
-### Missing environments
-
-- **`staging` and `prod` config files do not exist.** `config/staging.env`, `config/prod.env`, and their matching `.infra/resources/` files must be created before the `synth:staging` / `synth:prod` scripts are usable.
-
-### Config system
-
-- **`config/common.yaml` has `app.name: futbalio`** — this leftover note in the Known Issues section is resolved; the app name is correctly resolved from `devenv.yaml`.
-
-### Testing and operations
-
-- **No diff step** — the workflow applies directly with no `kubectl diff` against the live cluster, which is risky for dev and above.
-
----
-
-## Manifest History and GitOps Strategy
-
-`dist/` is gitignored by default so raw generated YAML never sits in the main branch.
-Two patterns are supported — choose one per environment:
-
-### Option A: GitOps with ArgoCD or Flux (recommended for staging / prod)
-
-1. After every merged PR, CI runs `pnpm run synth:{env}` and commits the generated `dist/` to
-   a **dedicated `infra-manifests` branch** (or a separate repository) with the commit SHA in the message.
-2. ArgoCD or Flux watches that branch and applies changes to the cluster automatically.
-3. You get full diff history, automated rollback (`git revert`), and PR-gated manifest reviews.
-
-```bash
-# CI step (simplified)
-APP_ENV=staging pnpm run synth:staging
-git add dist/
-git commit -m "chore(infra): staging manifests @ $GITHUB_SHA"
-git push origin infra-manifests
-```
-
-ArgoCD `Application` config example:
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: futbalio-staging
-spec:
-  source:
-    repoURL: https://github.com/your-org/groma
-    targetRevision: infra-manifests
-    path: dist/
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: futbalio-staging
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-```
-
-### Option B: Direct CI apply (simpler, suitable for local / dev)
-
-1. CI synthesizes and immediately applies:
-
-```bash
-APP_ENV=dev pnpm run synth:dev
-kubectl apply -f dist/
-kubectl rollout status deployment/api-deployment -n futbalio-dev
-```
-
-2. No manifest branch is required, but you lose diff history and rollback capability.
-   Add `kubectl diff -f dist/` before `apply` to surface changes in the CI log.
-
-### Prerequisites for staging / prod
-
-| Prerequisite | Why |
-|---|---|
-| [cert-manager](https://cert-manager.io/docs/installation/) + a `ClusterIssuer` | Automatic TLS certificate provisioning via Let's Encrypt |
-| [External Secrets Operator](https://external-secrets.io/latest/) + a `SecretStore` / `ClusterSecretStore` | Pull credentials from AWS Secrets Manager / Vault instead of embedding them in manifests |
-| ArgoCD **or** Flux | GitOps-based reconciliation from the `infra-manifests` branch |
-
----
-
-## Troubleshooting
-
-**`Cannot find devenv.yaml`**
-The builder resolves `devenv.yaml` relative to its own location at `../../../../devenv.yaml`. Run synth commands from inside `.devenv/.infra/`, not the project root.
-
-**Missing required config value error**
-Every field read by `builder.ts` is `required()`. The error message names the exact key that is missing — add it to the appropriate `config/{env}.env` or `.infra/resources/{env}.yaml`.
-
-**`pnpm run synth` produces no output / empty `dist/`**
-Verify `app.synth()` is the last line in `src/main.ts`.
-
-**Kubernetes types out of date**
-`src/lib/k8s.ts` is the committed canonical K8s API types file. Do not run `cdk8s import` — it overwrites this file. Add new API types manually or extend the existing ones.
+The Compose path is intended first for low-cost shared dev/staging. Production profile adds digest and healthcheck requirements; it does not make a single host highly available, provision off-host backups, verify restores, or install monitoring. Schedule and verify database backups separately before storing production data. There is no automatic database migration or data rollback. Updates may briefly interrupt service.

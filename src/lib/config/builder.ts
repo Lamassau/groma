@@ -52,7 +52,7 @@ function parseEnvFile(filePath: string): Record<string, any> {
 
     // Parse KEY=VALUE
     const match = trimmed.match(/^([^=]+)=(.*)$/);
-    if (!match) continue;
+    if (!match) throw new Error(`Invalid .env entry in ${filePath}: ${trimmed.split("=")[0]}`);
 
     const key = match[1].trim();
     let value = match[2].trim();
@@ -67,6 +67,7 @@ function parseEnvFile(filePath: string): Record<string, any> {
 
     // Convert flattened key to nested structure
     const parts = key.split("__");
+    if (parts.some(p => ["__proto__", "prototype", "constructor"].includes(p.toLowerCase()))) throw new Error(`Unsafe config key: ${key}`);
     let current = result;
 
     for (let i = 0; i < parts.length - 1; i++) {
@@ -84,8 +85,15 @@ function parseEnvFile(filePath: string): Record<string, any> {
       : convertKeyToCamelCase(lastPart);
 
     // Handle comma-separated arrays (for commands)
-    if (value.includes(",") && lastPart.toLowerCase() === "command") {
+    if (!shouldPreserveCase(parts) && ["command", "hosts"].includes(lastPart.toLowerCase())) {
       current[finalKey] = value.split(",").map((v) => v.trim());
+    } else if (!shouldPreserveCase(parts) && finalKey === "enabled") {
+      if (!["true", "false"].includes(value)) throw new Error(`${filePath}: ${key} must be true or false`);
+      current[finalKey] = value === "true";
+    } else if (!shouldPreserveCase(parts) && ["port", "targetPort", "nodePort", "debugPort", "debugNodePort", "replicas"].includes(finalKey)) {
+      const number = Number(value);
+      if (!/^\d+$/.test(value) || !Number.isSafeInteger(number) || number < (finalKey === "replicas" ? 0 : 1) || (finalKey !== "replicas" && number > 65535)) throw new Error(`${filePath}: ${key} is not a valid number`);
+      current[finalKey] = number;
     } else {
       current[finalKey] = value;
     }
@@ -254,7 +262,8 @@ export function buildFullStackConfig(
 ): FullStackConfig {
   const env = (process.env.APP_ENV || "local") as Environment;
   const registry = devEnvConfig.podman.registry;
-  const version = "local";
+  const version = process.env.IMAGE_TAG || "local";
+  if (!["local", "dev", "staging", "prod"].includes(env)) throw new Error(`Unsupported APP_ENV: ${env}`);
   const configuredAppName = devEnvConfig.app?.name || appName;
   const configuredDomain = (
     devEnvConfig.app?.domain ||
@@ -283,8 +292,8 @@ export function buildFullStackConfig(
   const domain = envApp.domain ?? configuredDomain;
 
   // ── App-wide config / secrets (must be in env yaml) ───────────────────────────
-  const appConfig = required(envApp.appConfig, "appConfig");
-  const appSecrets = required(envApp.appSecrets, "appSecrets");
+  const appConfig = envApp.appConfig ?? {};
+  const appSecrets = envApp.appSecrets ?? {};
 
   // ── Service config (must be in env yaml) ───────────────────────────────────
   const apiReplicas = required(svcApp("api").replicas, "services.api.replicas");
@@ -302,74 +311,23 @@ export function buildFullStackConfig(
     "services.web.resources (in resources yaml)",
   );
 
-  // ── Storage sizes (must be in resources yaml) ─────────────────────────────
-  const mysqlStorage = required(
-    dbRes("mysql").storageSize,
-    "databases.mysql.storageSize (in resources yaml)",
-  );
-  const mongoStorage = required(
-    dbRes("mongodb").storageSize,
-    "databases.mongodb.storageSize (in resources yaml)",
-  );
-  const redisStorage = required(
-    dbRes("redis").storageSize,
-    "databases.redis.storageSize (in resources yaml)",
-  );
-
-  // ── Validate resources (fail fast before synthesis reaches constructs) ────
+  const enabled = (name: string) => dbApp(name).enabled === true &&
+    (name !== "mongodb" || options.enableMongoDB === true) &&
+    (name !== "redis" || options.enableRedis === true);
+  const storage = (name: string) => enabled(name) ? required(dbRes(name).storageSize, `databases.${name}.storageSize`) : "";
+  const credential = (name: string, key: "database" | "username" | "password") => enabled(name) ? required(dbApp(name).credentials?.[key], `databases.${name}.credentials.${key}`) : "";
+  const mysqlStorage = storage("mysql"), mongoStorage = storage("mongodb"), redisStorage = storage("redis");
   validateResources(apiResources, "services.api.resources");
   validateResources(webResources, "services.web.resources");
-
-  // ── Database credentials (must be in env yaml) ─────────────────────────────
-  const mysqlCreds = {
-    database: required(
-      dbApp("mysql").credentials?.database,
-      "databases.mysql.credentials.database",
-    ),
-    username: required(
-      dbApp("mysql").credentials?.username,
-      "databases.mysql.credentials.username",
-    ),
-    password: required(
-      dbApp("mysql").credentials?.password,
-      "databases.mysql.credentials.password",
-    ),
-  };
-  const mysqlInitSqlPathRaw =
-    dbApp("mysql").initSqlPath ?? common.databases?.["mysql"]?.initSqlPath;
-  const mysqlInitSqlPath = mysqlInitSqlPathRaw
-    ? path.resolve(process.cwd(), mysqlInitSqlPathRaw)
-    : undefined;
-  const mongoCreds = {
-    database: required(
-      dbApp("mongodb").credentials?.database,
-      "databases.mongodb.credentials.database",
-    ),
-    username: required(
-      dbApp("mongodb").credentials?.username,
-      "databases.mongodb.credentials.username",
-    ),
-    password: required(
-      dbApp("mongodb").credentials?.password,
-      "databases.mongodb.credentials.password",
-    ),
-  };
-  const redisCreds = {
-    password: required(
-      dbApp("redis").credentials?.password,
-      "databases.redis.credentials.password",
-    ),
-  };
+  const mysqlCreds = {database: credential("mysql", "database"), username: credential("mysql", "username"), password: credential("mysql", "password")};
+  const mongoCreds = {database: credential("mongodb", "database"), username: credential("mongodb", "username"), password: credential("mongodb", "password")};
+  const redisCreds = {password: credential("redis", "password")};
+  const mysqlInitSqlPathRaw = dbApp("mysql").initSqlPath ?? common.databases?.["mysql"]?.initSqlPath;
+  const mysqlInitSqlPath = mysqlInitSqlPathRaw ? path.resolve(process.cwd(), mysqlInitSqlPathRaw) : undefined;
 
   // ── devTools (must be in env yaml) ─────────────────────────────────────────────
-  const dbAdminEnabled = required(
-    envApp.devtools?.dbAdmin?.enabled,
-    "devtools.dbAdmin.enabled",
-  );
-  const dbAdminPort = required(
-    envApp.devtools?.dbAdmin?.port,
-    "devtools.dbAdmin.port",
-  );
+  const dbAdminEnabled = envApp.devtools?.dbAdmin?.enabled ?? false;
+  const dbAdminPort = envApp.devtools?.dbAdmin?.port ?? 8080;
 
   // ── Ingress (must be in env yaml) ──────────────────────────────────────────
   const ingressEnabled = required(envApp.ingress?.enabled, "ingress.enabled");
@@ -382,6 +340,8 @@ export function buildFullStackConfig(
   // ── Secrets backend ────────────────────────────────────────────────────────
   const secretsBackend = envApp.secretsBackend ?? "inline";
   const externalSecretStore = envApp.externalSecretStore;
+  if (!["inline", "external-secrets"].includes(secretsBackend)) throw new Error("Invalid secretsBackend");
+  if (secretsBackend === "external-secrets" && !externalSecretStore?.name) throw new Error("externalSecretStore.name is required for external-secrets");
 
   // ── Build FullStackConfig ──────────────────────────────────────────────────────
   const config: FullStackConfig = {
@@ -396,7 +356,7 @@ export function buildFullStackConfig(
 
     database: {
       mysql: {
-        enabled: required(dbApp("mysql").enabled, "databases.mysql.enabled"),
+        enabled: enabled("mysql"),
         credentials: mysqlCreds,
         storageSize: mysqlStorage,
         initSqlPath: mysqlInitSqlPath,
@@ -409,10 +369,7 @@ export function buildFullStackConfig(
     nosql: {
       mongodb: options.enableMongoDB
         ? {
-            enabled: required(
-              dbApp("mongodb").enabled,
-              "databases.mongodb.enabled",
-            ),
+            enabled: enabled("mongodb"),
             credentials: mongoCreds,
             storageSize: mongoStorage,
             storageClassName: dbApp("mongodb").storageClassName,
@@ -429,10 +386,7 @@ export function buildFullStackConfig(
     cache: {
       redis: options.enableRedis
         ? {
-            enabled: required(
-              dbApp("redis").enabled,
-              "databases.redis.enabled",
-            ),
+            enabled: enabled("redis"),
             credentials: redisCreds,
             storageSize: redisStorage,
             storageClassName: dbApp("redis").storageClassName,
@@ -520,6 +474,7 @@ export function buildFullStackConfig(
     },
 
     ingress: {
+      mode: envApp.ingress?.mode,
       enabled: ingressEnabled,
       className: ingressClassName,
       annotations: ingressAnnotations,

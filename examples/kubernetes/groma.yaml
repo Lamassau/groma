@@ -1,0 +1,15 @@
+schemaVersion: 1
+name: demo
+environment: dev
+profile: shared-dev
+target: kubernetes
+kubernetes:
+  context: your-context
+  ingressClass: nginx
+services:
+  web:
+    image: nginx:1.28-alpine
+    port: 80
+    healthcheck: [wget, -q, -O, /dev/null, http://127.0.0.1/]
+    route:
+      domain: demo.example.com

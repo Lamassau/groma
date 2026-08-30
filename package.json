@@ -1,8 +1,8 @@
 {
-  "name": "@k0s-dev/infra",
+  "name": "@lamassau/groma",
   "version": "0.1.0",
   "private": true,
-  "description": "CDK8s infrastructure charts for the local k0s dev cluster",
+  "description": "Deploy containerized applications to Compose hosts or Kubernetes",
   "scripts": {
     "import": "echo 'cdk8s import disabled: using committed src/lib/k8s.ts'",
     "build": "tsc --noEmit",
@@ -11,20 +11,30 @@
     "synth:dev": "APP_ENV=dev cdk8s synth",
     "synth:staging": "APP_ENV=staging cdk8s synth",
     "synth:prod": "APP_ENV=prod cdk8s synth",
-    "diff:local": "APP_ENV=local cdk8s synth && kubectl diff -f dist/ || true",
-    "diff:dev": "APP_ENV=dev cdk8s synth && kubectl diff -f dist/ || true",
+    "diff:local": "node scripts/diff.cjs local",
+    "diff:dev": "node scripts/diff.cjs dev",
     "apply:local": "APP_ENV=local cdk8s synth && kubectl apply -f dist/",
     "apply:dev": "APP_ENV=dev cdk8s synth && kubectl apply -f dist/",
     "clean": "rm -rf dist imports out",
     "watch": "tsc --watch",
     "test": "jest",
-    "test:cov": "jest --coverage"
+    "test:cov": "jest --coverage",
+    "compile": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run compile",
+    "groma": "tsx src/cli.ts",
+    "test:integration": "node scripts/smoke-compose.cjs"
   },
   "jest": {
     "preset": "ts-jest",
     "testEnvironment": "node",
-    "testMatch": ["**/test/**/*.spec.ts"],
-    "moduleFileExtensions": ["ts", "js", "json"],
+    "testMatch": [
+      "**/test/**/*.spec.ts"
+    ],
+    "moduleFileExtensions": [
+      "ts",
+      "js",
+      "json"
+    ],
     "transform": {
       "^.+\\.ts$": "ts-jest"
     }
@@ -44,5 +54,20 @@
     "ts-node": "^10.9.0",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "main": "build/index.js",
+  "types": "build/index.d.ts",
+  "bin": {
+    "groma": "build/cli.js"
+  },
+  "files": [
+    "build",
+    "README.md",
+    "docs",
+    "examples"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "packageManager": "pnpm@10.30.3"
 }

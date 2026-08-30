@@ -179,3 +179,23 @@ describe("FullStackChart", () => {
     }
   });
 });
+
+describe('legacy ingress and secrets safety', () => {
+  it('does not emit routes when disabled', () => {
+    const chart = new FullStackChart(new App(),'chart',{config:makeConfig({ingress:{enabled:false,className:'traefik'}})});
+    expect(Testing.synth(chart).filter((m:any)=>['Ingress','IngressRoute'].includes(m.kind))).toHaveLength(0);
+  });
+  it('uses standard ingress by default without requiring Traefik CRDs', () => {
+    const chart = new FullStackChart(new App(),'chart',{config:makeConfig()});
+    expect(Testing.synth(chart).some((m:any)=>m.kind==='IngressRoute')).toBe(false);
+  });
+  it('emits only Traefik routes when explicitly selected, including TLS', () => {
+    const chart = new FullStackChart(new App(),'chart',{config:makeConfig({ingress:{enabled:true,className:'traefik',mode:'traefik',tls:{secretName:'tls',hosts:[]}}})});
+    const docs = Testing.synth(chart);
+    expect(docs.some((m:any)=>m.kind==='Ingress')).toBe(false);
+    expect(docs.filter((m:any)=>m.kind==='IngressRoute').every((m:any)=>m.spec.tls.secretName==='tls')).toBe(true);
+  });
+  it('fails closed when an external secret store is missing', () => {
+    expect(()=>new FullStackChart(new App(),'chart',{config:makeConfig({secretsBackend:'external-secrets'})})).toThrow(/externalSecretStore/);
+  });
+});

@@ -1,0 +1,6 @@
+profile: shared-dev
+services:
+  web:
+    route:
+      domain: staging.example.com
+      hostPort: 18081

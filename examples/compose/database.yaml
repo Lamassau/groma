@@ -1,0 +1,25 @@
+# Standalone disposable database example; secrets are provisioned on the host separately.
+schemaVersion: 1
+name: database-demo
+environment: dev
+profile: shared-dev
+target: compose
+host:
+  ssh: deploy@your-droplet.example.com
+secrets:
+  db-password:
+    file: /opt/groma-secrets/database-demo/password
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_DB: demo
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+    secrets: [db-password]
+    healthcheck: [pg_isready, -U, demo, -d, demo]
+    volumes:
+      - name: data
+        mount: /var/lib/postgresql/data
+        mode: ephemeral
+    resources: {cpu: 0.5, memory: 512Mi}
