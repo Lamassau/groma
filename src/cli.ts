@@ -181,8 +181,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     case 'status':output=kubectl(['-n',projectName(p),'get','deployments,pods,services,ingresses','-o','json']);break;
     case 'logs':if(!service)throw new Error('Kubernetes logs requires a service name');output=kubectl(['-n',projectName(p),'logs',`deployment/${service}`,'--tail=100']);break;
     case 'rollback': {
-      for (const n of Object.keys(p.services)) output+=kubectl(['-n',projectName(p),'rollout','undo',`deployment/${n}`]);
-      for (const n of Object.keys(p.services)) output+=kubectl(['-n',projectName(p),'rollout','status',`deployment/${n}`,'--timeout=120s']);
+      const rollbackable = Object.entries(p.services).filter(([,service]) => !(service.volumes ?? []).some(volume => volume.mode === 'persistent')).map(([name]) => name);
+      const skipped = Object.entries(p.services).filter(([,service]) => (service.volumes ?? []).some(volume => volume.mode === 'persistent')).map(([name]) => name);
+      if (!rollbackable.length) throw new Error('Kubernetes rollback skipped: all services declare persistent volumes. Roll back manually with a reviewed manifest/image set.');
+      for (const n of rollbackable) {
+        output+=kubectl(['-n',projectName(p),'rollout','undo',`deployment/${n}`]);
+        output+=kubectl(['-n',projectName(p),'rollout','status',`deployment/${n}`,'--timeout=120s']);
+      }
+      if (skipped.length) output += `\nSkipped rollback for persistent-volume services: ${skipped.join(', ')}\n`;
       const verification=values['skip-verify']?{ok:true,skipped:true,endpoints:[]}:await verifyProject(p,verificationOptions);
       emit({...report,rolledBack:true,verification,output});if(!verification.ok) process.exitCode=1;return;
     }

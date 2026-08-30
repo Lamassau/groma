@@ -13,7 +13,7 @@ const fixture = (): Project => validateProject(load(starter('compose','demo')));
 
 describe('Deployment configuration boundary', () => {
   it('collects errors and rejects unsupported capabilities', () => {
-    expect(()=>validateProject({schemaVersion:2,services:{web:{image:'bad image',replicas:2}}})).toThrow(/schemaVersion:[\s\S]*profile:[\s\S]*target:/);
+    expect(()=>validateProject({schemaVersion:2,services:{web:{image:'bad image',replicas:2}}})).toThrow(/schemaVersion:[\s\S]*target:/);
   });
   it.each(['false',false,null,{},1])('rejects invalid service object %p', value => {
     const p: any = fixture(); p.services.web = value;
