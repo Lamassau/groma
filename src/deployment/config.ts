@@ -5,6 +5,7 @@ import { isIP } from 'net';
 
 export interface AppService {
   image: string;
+  replicas?: number;
   port?: number;
   command?: string[];
   environment?: Record<string, string>;
@@ -30,6 +31,22 @@ const nameRE = /^[a-z][a-z0-9-]{0,29}$/;
 const domainRE = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
 const safePath = (v: unknown) => typeof v === 'string' && /^\/[a-zA-Z0-9_./-]+$/.test(v) && !v.split('/').includes('..');
+const groupedError = (errors: string[]) => {
+  const groups = new Map<string, string[]>();
+  for (const error of errors) {
+    const key = error.match(/^([^:]+):\s/)?.[1] ?? error;
+    const section = key.includes('.') ? key.split('.')[0] : key;
+    if (!groups.has(section)) groups.set(section, []);
+    groups.get(section)!.push(error);
+  }
+  const lines = ['Invalid GROMa configuration:'];
+  for (const [section, entries] of [...groups.entries()].sort(([a],[b]) => a.localeCompare(b))) {
+    lines.push(`  ${section}:`);
+    for (const entry of entries) lines.push(`    - ${entry}`);
+  }
+  lines.push('Action: fix the sections above, then rerun groma validate.');
+  return lines.join('\n');
+};
 
 /** Validate at the boundary: TypeScript casts are not runtime validation. Unknown keys fail closed. */
 export function validateProject(input: unknown): Project {
@@ -74,10 +91,12 @@ export function validateProject(input: unknown): Project {
   for (const [n, s] of Object.entries(services) as [string, any][]) {
     const at = `services.${n}`;
     check(nameRE.test(n), at, 'invalid name');
-    keys(s, ['image','port','command','environment','secrets','dependsOn','healthcheck','route','resources','volumes'], at);
+    keys(s, ['image','replicas','port','command','environment','secrets','dependsOn','healthcheck','route','resources','volumes'], at);
     if (!object(s)) continue;
     check(typeof s.image === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$/.test(s.image), `${at}.image`, 'container image required (no substitutions)');
     if (p.profile === 'production') check(typeof s.image === 'string' && /@sha256:[a-f0-9]{64}$/.test(s.image), `${at}.image`, 'production requires an immutable sha256 digest');
+    if (p.target === 'compose') check(s.replicas === undefined, `${at}.replicas`, 'unsupported by Compose; scale by adding services or using Kubernetes');
+    else check(s.replicas === undefined || (Number.isInteger(s.replicas) && s.replicas > 0 && s.replicas <= 1000), `${at}.replicas`, 'must be an integer from 1 to 1000');
     check(s.port === undefined || Number.isInteger(s.port) && s.port > 0 && s.port <= 65535, `${at}.port`, 'must be an integer from 1 to 65535');
     for (const k of ['command','healthcheck','secrets','dependsOn']) if (s[k] !== undefined) check(Array.isArray(s[k]) && s[k].length > 0 && s[k].every((x: any) => typeof x === 'string' && x.length > 0 && !x.includes('\0')), `${at}.${k}`, 'non-empty string array required');
     if (s.environment !== undefined) {
@@ -134,7 +153,7 @@ export function validateProject(input: unknown): Project {
     visiting.delete(n); done.add(n);
   };
   for (const n of Object.keys(services)) visit(n);
-  if (errors.length) throw new Error(`Invalid GROMa configuration:\n${errors.map(e => `  - ${e}`).join('\n')}`);
+  if (errors.length) throw new Error(groupedError(errors));
   return p as Project;
 }
 
@@ -158,7 +177,11 @@ export function loadProject(file: string, environment?: string, images: Record<s
     const out = Object.assign(Object.create(null), a);
     for (const [k,v] of Object.entries(b)) {
       if (['__proto__','prototype','constructor'].includes(k)) throw new Error(`Unsafe config key: ${k}`);
-      out[k] = merge(a[k],v);
+      const merged = merge(a[k],v);
+      if (k === 'services' && object(merged) && object(v)) {
+        for (const [service, value] of Object.entries(v)) if (value === null) delete merged[service];
+      }
+      out[k] = merged;
     }
     return out;
   };

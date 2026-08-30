@@ -4,6 +4,24 @@ Deploy containerized applications to a **plain Linux server with Docker Compose*
 
 GROMa provides a versioned application schema, an installable CLI, CDK8s library exports, validation, manifest generation, SSH deployment, HTTPS routing, and release recovery. It does not create cloud servers, build/push application images, register domains, or manage your DNS account.
 
+## Feature matrix
+
+| Capability | Compose target | Kubernetes target | Legacy `src/lib` chart path |
+| --- | --- | --- | --- |
+| `init` / `validate` / `synth` | ✅ | ✅ | N/A (TypeScript chart code) |
+| `doctor` / `plan` / `deploy` / `verify` | ✅ | ✅ | N/A |
+| `apps` / `start` / `stop` / `prune` | ✅ | ❌ | N/A |
+| `rollback` | ✅ release-directory rollback | ✅ deployment rollout undo | N/A |
+| Public HTTPS routing | ✅ Caddy on host | ✅ Ingress | via your chart choices |
+| Generic renderer autoscaling/PDB/netpol/backup | ❌ | ❌ | ✅ available as constructs |
+
+## Recommended path by use case
+
+- Single-host low-cost dev/staging: Compose target CLI (`groma.yaml` + host setup + deploy workflow).
+- Kubernetes app with standard Deployment/Service/Ingress/PVC needs: Kubernetes target CLI (`groma.yaml`).
+- Kubernetes platform teams requiring custom CRDs/policies/topology controls: library/construct path in `src/lib`.
+- Existing `.devenv` users: continue legacy path first, then migrate intentionally using [migration notes](docs/migration.md).
+
 ## Quick start
 
 Requirements on your workstation: Node.js 20+, pnpm 10.30.3, and OpenSSH. Docker is needed on the target server, not your workstation. Kubernetes commands require local `kubectl`.
@@ -95,7 +113,7 @@ See [examples/compose](examples/compose), [examples/kubernetes](examples/kuberne
 | `prune` | Preview/execute safe old-release cleanup; protect current, previous and in-use releases. |
 | `status` | Inspect the active application's services. |
 | `logs [service]` | Last 100 lines. Application logs may contain sensitive data. |
-| `rollback` | Compose only: restore the previous release's configuration and locked image digests. Does not revert databases or secret file contents. |
+| `rollback` | Compose: restore previous release config and locked images. Kubernetes: rollout undo each service deployment. Neither mode reverts database contents or secret file contents. |
 | `host setup` | Print an Ubuntu setup script; remote execution requires `--execute --yes --expect-target`. |
 
 Common options: `--config PATH`, `--env NAME`, `--out PATH`, `--json`, repeatable `--image SERVICE=IMAGE`. See [operations](docs/operations.md) for all six improvements and [GitHub Actions deployment](docs/github-actions.md) for automated dev/protected production. `--json` wraps command output in one object for automation (except the intentionally textual `init`, help and host setup commands).

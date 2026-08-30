@@ -22,7 +22,7 @@ lib/
 import {
   loadDevEnvConfig,
   buildFullStackConfig,
-  ModernFullStackChart,
+  FullStackChart,
 } from "./lib";
 
 // Load configuration from devenv.yaml
@@ -35,7 +35,7 @@ const config = buildFullStackConfig(devEnvConfig, "futbalio", {
 });
 
 // Create and deploy chart
-new ModernFullStackChart(app, "app", { config });
+new FullStackChart(app, "app", { config });
 ```
 
 ### 2. Using Individual Constructs
@@ -125,7 +125,7 @@ Reusable CDK8s constructs for common infrastructure components:
 
 Pre-built chart patterns for complete application stacks:
 
-- `ModernFullStackChart`: Complete full-stack deployment
+- `FullStackChart`: Complete full-stack deployment
 - `TraefikChart`: Traefik ingress controller
 - `MetalLBConfigChart`: MetalLB load balancer configuration
 
@@ -193,8 +193,10 @@ The library maintains backward compatibility while encouraging migration to the 
 import { devConfig, prodConfig } from "./config";
 
 // Modern (recommended)
-import { buildFullStackConfig, ModernFullStackChart } from "./lib";
+import { buildFullStackConfig, FullStackChart } from "./lib";
 ```
+
+`ModernFullStackChart` is still exported as a compatibility alias for existing consumers and maps to `FullStackChart`.
 
 ## 🤝 Contributing
 

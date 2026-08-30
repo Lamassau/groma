@@ -22,7 +22,9 @@
  * ```
  */
 
-// Re-export all modules for convenience
+// Re-export all modules for convenience.
+// This library path remains supported for advanced Kubernetes composition,
+// while the generic CLI schema path is the recommended default for new apps.
 export * from "./charts";
 export * from "./config";
 export * from "./constructs";

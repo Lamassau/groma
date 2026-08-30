@@ -527,4 +527,8 @@ export class FullStackChart extends Chart {
       });
     }
   }
+
 }
+
+/** @deprecated Use FullStackChart. Kept for compatibility with older imports. */
+export const ModernFullStackChart = FullStackChart;

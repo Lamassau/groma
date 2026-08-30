@@ -32,7 +32,7 @@ export const help = `GROMa — application deployment to Compose hosts or Kubern
 Common: --config PATH, --env NAME, --json, --image SERVICE=IMAGE (repeatable).
 Deploy: --allow-service-removal, --allow-storage-change, --skip-verify (non-production only).
 Stop: --allow-ephemeral-loss explicitly acknowledges tmpfs data loss.
-Init: --name, --host, --ssh-port, --context, --domain, --port, --host-port,
+Init: --name, --host, --ssh-port, --context, --domain, --port, --host-port, --replicas,
       --health-path, --health-command JSON, --database none|postgres|mysql,
       --storage ephemeral|persistent, --secret-file PATH.
 No cloud provisioning or DNS changes. Secret values never belong in YAML.
@@ -68,6 +68,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     host:{type:'string'},'ssh-port':{type:'string'},context:{type:'string'},image:{type:'string',multiple:true},domain:{type:'string'},
     port:{type:'string'},'host-port':{type:'string'},'health-path':{type:'string'},'health-command':{type:'string'},
     database:{type:'string'},storage:{type:'string'},'secret-file':{type:'string'},
+    replicas:{type:'string'},
     wait:{type:'string'},timeout:{type:'string'},'min-cert-days':{type:'string'},keep:{type:'string'},'min-age-hours':{type:'string'},
     'allow-service-removal':{type:'boolean'},'allow-storage-change':{type:'boolean'},'skip-verify':{type:'boolean'},'allow-ephemeral-loss':{type:'boolean'},
   }});
@@ -80,7 +81,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       sshPort:number(values['ssh-port'],22,1,65535),port:number(values.port,80,1,65535),hostPort:number(values['host-port'],18080,1024,65535),
       image:images(values.image).web,domain:values.domain,healthPath:values['health-path'],
       healthCommand:values['health-command'] ? JSON.parse(values['health-command']) : undefined,
-      database:values.database,storage:values.storage,secretFile:values['secret-file']};
+      database:values.database,storage:values.storage,secretFile:values['secret-file'],replicas:number(values.replicas,1,1,1000)};
     const interactive=values.interactive || (!values['no-interactive'] && process.stdin.isTTY && process.stdout.isTTY && !values.json);
     const p=interactive ? await guidedProject(opts) : starterProject(opts);
     for (const service of Object.keys(images(values.image))) if(service!=='web') throw new Error('init supports --image web=IMAGE; add other services in the wizard or config');
@@ -179,7 +180,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }
     case 'status':output=kubectl(['-n',projectName(p),'get','deployments,pods,services,ingresses','-o','json']);break;
     case 'logs':if(!service)throw new Error('Kubernetes logs requires a service name');output=kubectl(['-n',projectName(p),'logs',`deployment/${service}`,'--tail=100']);break;
-    case 'rollback':throw new Error('Kubernetes rollback is not automated; redeploy a reviewed prior configuration. Database state is never rolled back.');
+    case 'rollback': {
+      const rollbackable = Object.entries(p.services).filter(([,service]) => !(service.volumes ?? []).some(volume => volume.mode === 'persistent')).map(([name]) => name);
+      const skipped = Object.entries(p.services).filter(([,service]) => (service.volumes ?? []).some(volume => volume.mode === 'persistent')).map(([name]) => name);
+      if (!rollbackable.length) throw new Error('Kubernetes rollback skipped: all services declare persistent volumes. Roll back manually with a reviewed manifest/image set.');
+      for (const n of rollbackable) {
+        output+=kubectl(['-n',projectName(p),'rollout','undo',`deployment/${n}`]);
+        output+=kubectl(['-n',projectName(p),'rollout','status',`deployment/${n}`,'--timeout=120s']);
+      }
+      if (skipped.length) output += `\nSkipped rollback for persistent-volume services: ${skipped.join(', ')}\n`;
+      const verification=values['skip-verify']?{ok:true,skipped:true,endpoints:[]}:await verifyProject(p,verificationOptions);
+      emit({...report,rolledBack:true,verification,output});if(!verification.ok) process.exitCode=1;return;
+    }
   }
   emit({...report,output});
 }

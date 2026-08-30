@@ -14,7 +14,14 @@ Profiles do not promise backup coverage or availability. Resource limits are per
 
 ## Environment overrides
 
-Place overrides in `environments/<name>.yaml`, relative to the base configuration. Objects merge and arrays replace. Keep one target type per base file; use separate base files for Compose and Kubernetes rather than mixing host/context settings. Services cannot currently be deleted through overlays.
+Place overrides in `environments/<name>.yaml`, relative to the base configuration. Objects merge and arrays replace. Keep one target type per base file; use separate base files for Compose and Kubernetes rather than mixing host/context settings.
+
+To intentionally remove a service from the base config, set that service to `null` in the overlay:
+
+```yaml
+services:
+  worker: null
+```
 
 ```yaml
 # environments/staging.yaml
@@ -77,6 +84,6 @@ Kubernetes settings: explicit `context`, optional `ingressClass`, `tlsSecret`, `
 
 The `command` field maps to Compose command / Kubernetes args, preserving image ENTRYPOINT. Healthchecks are exec arrays on both targets. An HTTP check therefore requires an HTTP client or suitable language runtime inside the image. No shell or curl is assumed.
 
-The generic Kubernetes renderer currently creates Deployments (one replica), Services, Ingress and optional PVCs. It does not create NetworkPolicies, install CRDs, guarantee Pod Security admission compatibility, or automatically provision TLS. Review those cluster requirements before production.
+The generic Kubernetes renderer currently creates Deployments, Services, Ingress and optional PVCs. Replicas default to `1` and can be set per service with `services.<name>.replicas`. It does not create NetworkPolicies, install CRDs, guarantee Pod Security admission compatibility, or automatically provision TLS. Review those cluster requirements before production.
 
 Public routes also accept healthPath, expectedStatus and expectedAddresses for DNS/TLS/health verification. See [operations](operations.md) for validation and retry behavior.
