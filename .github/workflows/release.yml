@@ -47,7 +47,7 @@ jobs:
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: latest
+          version: 10.30.3
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -64,34 +64,17 @@ jobs:
       - name: Run tests
         run: pnpm run test
 
-      # Synthesise manifests for every environment that ships a complete config
-      # template in config/.  Environments without a devenv.yaml or full env
-      # file are skipped gracefully.
-      - name: Synthesise manifests
+      # These complete, non-secret examples MUST synthesize. Failures block assets.
+      - name: Build package and example manifests
         id: synth
         run: |
-          TAG="${{ needs.release-please.outputs.tag_name }}"
-          echo "Synthesising manifests for release $TAG"
+          pnpm run compile
           mkdir -p release-assets
-
-          for env in local dev staging prod; do
-            echo "→ $env"
-            if APP_ENV=$env pnpm run synth 2>/dev/null; then
-              tar -czf "release-assets/manifests-${env}.tar.gz" dist/
-              echo "  ✓ manifests-${env}.tar.gz created"
-            else
-              echo "  ⚠ Skipped $env (config incomplete — expected for staging/prod in CI)"
-            fi
-          done
-
-          # Bundle all successfully generated sets together
-          if compgen -G "release-assets/manifests-*.tar.gz" > /dev/null; then
-            tar -czf "release-assets/manifests-all.tar.gz" -C release-assets \
-              $(ls release-assets/*.tar.gz | xargs -n1 basename)
-            echo "synth_succeeded=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "synth_succeeded=false" >> "$GITHUB_OUTPUT"
-          fi
+          node build/cli.js synth --config examples/compose/groma.yaml --out dist/compose
+          node build/cli.js synth --config examples/kubernetes/groma.yaml --out dist/kubernetes
+          tar -czf release-assets/example-manifests.tar.gz -C dist compose kubernetes
+          npm pack --ignore-scripts --pack-destination release-assets
+          echo "synth_succeeded=true" >> "$GITHUB_OUTPUT"
 
       - name: Upload manifest archives to release
         if: ${{ steps.synth.outputs.synth_succeeded == 'true' }}
@@ -99,7 +82,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ needs.release-please.outputs.tag_name }}"
-          for archive in release-assets/*.tar.gz; do
+          for archive in release-assets/*.tar.gz release-assets/*.tgz; do
             echo "Uploading $archive …"
             gh release upload "$TAG" "$archive" --clobber
           done

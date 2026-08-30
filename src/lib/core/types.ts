@@ -96,6 +96,8 @@ export interface ServiceConfig {
  * Ingress configuration — maps directly to env/{env}.yaml `ingress` block
  */
 export interface IngressConfig {
+  /** Standard Kubernetes Ingress by default; opt into Traefik CRDs explicitly. */
+  mode?: "standard" | "traefik";
   enabled: boolean;
   className: string;
   annotations?: Record<string, string>;

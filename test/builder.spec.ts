@@ -89,3 +89,23 @@ describe("generatePassword", () => {
     expect(pw1).not.toBe(pw2);
   });
 });
+
+describe('legacy .env runtime types', () => {
+  it('parses booleans and numbers while preserving application strings', () => {
+    const dir = makeTempConfig('SERVICES__API__PORT=3000\n', 'DATABASES__MYSQL__ENABLED=false\nSERVICES__API__REPLICAS=2\nAPP_CONFIG__ENABLED=false\nAPP_CONFIG__PORT=123\nSERVICES__API__COMMAND=node\n', '');
+    try {
+      const config = loadInfraConfig('local',dir);
+      expect(config.common.services!.api.port).toBe(3000);
+      expect(config.app.databases!.mysql.enabled).toBe(false);
+      expect(config.app.services!.api.replicas).toBe(2);
+      expect(config.app.appConfig!.ENABLED).toBe('false');
+      expect(config.app.appConfig!.PORT).toBe('123');
+      expect(config.app.services!.api.command).toEqual(['node']);
+    } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+  });
+  it('rejects invalid typed fields instead of relying on TypeScript casts', () => {
+    const dir = makeTempConfig('SERVICES__API__PORT=not-a-port\n','','');
+    try { expect(()=>loadInfraConfig('local',dir)).toThrow(/valid number/); }
+    finally { fs.rmSync(dir,{recursive:true,force:true}); }
+  });
+});
