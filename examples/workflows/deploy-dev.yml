@@ -1,0 +1,19 @@
+# Copy into an application repository's .github/workflows/ after replacing the SHA and host.
+name: Deploy dev
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  actions: read
+  packages: write
+jobs:
+  deploy:
+    uses: Lamassau/groma/.github/workflows/deploy.yml@REPLACE_WITH_REVIEWED_GROMA_SHA
+    with:
+      environment: dev
+      expected-target: deploy@your-droplet.example.com
+      groma-ref: REPLACE_WITH_REVIEWED_GROMA_SHA
+      config-path: groma.yaml
+      services: '[{"service":"web","context":".","dockerfile":"Dockerfile"}]'
+    # Set SSH_PRIVATE_KEY and SSH_KNOWN_HOSTS in the caller repository's dev environment.

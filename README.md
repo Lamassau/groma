@@ -42,7 +42,7 @@ node build/cli.js status
 node build/cli.js logs web
 ```
 
-Caddy provisions and renews HTTPS certificates when DNS and network access are correct. A successful deployment means Compose services passed running/health checks and Caddy accepted the configuration; it does **not** certify public DNS, certificate issuance, or external reachability. Verify the public URL after deployment.
+Caddy provisions and renews HTTPS certificates when DNS and network access are correct. Deployment now verifies public DNS, certificate validity and the configured HTTP health endpoint after containers are ready. Verification failures return a nonzero exit code while retaining the deployed release; see [operations](docs/operations.md).
 
 ## Configuration
 
@@ -83,18 +83,22 @@ See [examples/compose](examples/compose), [examples/kubernetes](examples/kuberne
 
 | Command | Behavior |
 | --- | --- |
-| `init` | Create a starter without overwriting an existing file. |
+| `init` | Guided setup in a terminal, or `--no-interactive` for scripts; never overwrites files. |
 | `validate` | Offline schema and consistency checks. |
 | `synth` | Generate manifests without accessing a target. |
 | `doctor` | Check target access and core runtime prerequisites. |
-| `plan` | Read-only Compose configuration diff or live `kubectl diff`. |
-| `deploy` | Explicit target confirmation, apply and wait for health/readiness. |
+| `plan` | Digest-aware Compose service/routing/storage preview or live `kubectl diff`. |
+| `deploy` | Review plan, apply locked images, wait for readiness, and verify public DNS/TLS/health. |
+| `verify` | Check public DNS, HTTPS certificates and health URLs independently. |
+| `apps` | Host-wide apps, URLs, image versions, health and resource usage. |
+| `start` / `stop` | Operate existing active-release containers without pulling images or deleting volumes. |
+| `prune` | Preview/execute safe old-release cleanup; protect current, previous and in-use releases. |
 | `status` | Inspect the active application's services. |
 | `logs [service]` | Last 100 lines. Application logs may contain sensitive data. |
 | `rollback` | Compose only: restore the previous release's configuration and locked image digests. Does not revert databases or secret file contents. |
 | `host setup` | Print an Ubuntu setup script; remote execution requires `--execute --yes --expect-target`. |
 
-Common options: `--config PATH`, `--env NAME`, `--out PATH`, `--json`. `--json` wraps command output in one object for automation (except the intentionally textual `init`, help and host setup commands).
+Common options: `--config PATH`, `--env NAME`, `--out PATH`, `--json`, repeatable `--image SERVICE=IMAGE`. See [operations](docs/operations.md) for all six improvements and [GitHub Actions deployment](docs/github-actions.md) for automated dev/protected production. `--json` wraps command output in one object for automation (except the intentionally textual `init`, help and host setup commands).
 
 `--env staging` requires `environments/staging.yaml` alongside your base config. Objects merge recursively; arrays replace. No overlay is guessed. The environment name and resource profile are separate, so staging can use `shared-dev`.
 
@@ -114,6 +118,7 @@ The existing `FullStackChart`, database/cache/backup constructs and `.devenv` bu
 ```bash
 pnpm run build
 pnpm test --runInBand
+pnpm run test:agent
 pnpm run compile
 pnpm pack
 # Install the resulting .tgz in another project, or globally:

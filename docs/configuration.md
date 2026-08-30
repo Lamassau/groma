@@ -78,3 +78,5 @@ Kubernetes settings: explicit `context`, optional `ingressClass`, `tlsSecret`, `
 The `command` field maps to Compose command / Kubernetes args, preserving image ENTRYPOINT. Healthchecks are exec arrays on both targets. An HTTP check therefore requires an HTTP client or suitable language runtime inside the image. No shell or curl is assumed.
 
 The generic Kubernetes renderer currently creates Deployments (one replica), Services, Ingress and optional PVCs. It does not create NetworkPolicies, install CRDs, guarantee Pod Security admission compatibility, or automatically provision TLS. Review those cluster requirements before production.
+
+Public routes also accept healthPath, expectedStatus and expectedAddresses for DNS/TLS/health verification. See [operations](operations.md) for validation and retry behavior.

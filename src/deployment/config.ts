@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { load } from 'js-yaml';
+import { isIP } from 'net';
 
 export interface AppService {
   image: string;
@@ -10,7 +11,7 @@ export interface AppService {
   secrets?: string[];
   dependsOn?: string[];
   healthcheck?: string[];
-  route?: { domain: string; hostPort?: number };
+  route?: { domain: string; hostPort?: number; healthPath?: string; expectedStatus?: number; expectedAddresses?: string[] };
   resources?: { cpu: number; memory: string };
   volumes?: Array<{ name: string; mount: string; mode: 'persistent' | 'ephemeral'; size?: string }>;
 }
@@ -95,9 +96,12 @@ export function validateProject(input: unknown): Project {
       check(typeof s.resources?.memory === 'string' && /^[1-9][0-9]*(Mi|Gi)$/.test(s.resources.memory), `${at}.resources.memory`, 'use positive Mi or Gi quantity');
     }
     if (s.route !== undefined) {
-      keys(s.route, ['domain','hostPort'], `${at}.route`);
+      keys(s.route, ['domain','hostPort','healthPath','expectedStatus','expectedAddresses'], `${at}.route`);
       check(typeof s.route?.domain === 'string' && domainRE.test(s.route.domain), `${at}.route.domain`, 'DNS hostname required');
       check(!domains.has(s.route?.domain), `${at}.route.domain`, 'duplicate domain'); domains.add(s.route?.domain);
+      check(s.route?.healthPath === undefined || typeof s.route.healthPath === 'string' && /^\/(?!\/)[^\s#]*$/.test(s.route.healthPath), `${at}.route.healthPath`, 'must be an absolute URL path without a fragment');
+      check(s.route?.expectedStatus === undefined || Number.isInteger(s.route.expectedStatus) && s.route.expectedStatus >= 200 && s.route.expectedStatus <= 299, `${at}.route.expectedStatus`, 'must be a 2xx status');
+      check(s.route?.expectedAddresses === undefined || Array.isArray(s.route.expectedAddresses) && s.route.expectedAddresses.length > 0 && s.route.expectedAddresses.every((a: unknown) => typeof a === 'string' && isIP(a)), `${at}.route.expectedAddresses`, 'non-empty IP address array required');
       check(s.port !== undefined, `${at}.port`, 'required for a route');
       if (p.target === 'compose') {
         check(Number.isInteger(s.route?.hostPort) && s.route.hostPort >= 1024 && s.route.hostPort <= 65535, `${at}.route.hostPort`, 'unique loopback port 1024–65535 required');
@@ -134,10 +138,18 @@ export function validateProject(input: unknown): Project {
   return p as Project;
 }
 
-export function loadProject(file: string, environment?: string): Project {
+export function loadProject(file: string, environment?: string, images: Record<string, string> = {}): Project {
   const absolute = path.resolve(file);
   const base = load(fs.readFileSync(absolute, 'utf8'), { schema: require('js-yaml').JSON_SCHEMA });
-  if (!environment) return validateProject(base);
+  const withImages = (value: any): Project => {
+    if (!object(value) || !object(value.services)) return validateProject(value);
+    for (const [service, image] of Object.entries(images)) {
+      if (!Object.hasOwn(value.services, service)) throw new Error(`Unknown image override service: ${service}`);
+      value.services[service] = { ...value.services[service], image };
+    }
+    return validateProject(value);
+  };
+  if (!environment) return withImages(base);
   if (!nameRE.test(environment)) throw new Error('Invalid environment name');
   const overlay = path.join(path.dirname(absolute), 'environments', `${environment}.yaml`);
   if (!fs.existsSync(overlay)) throw new Error(`Environment overlay not found: ${overlay}`);
@@ -150,6 +162,6 @@ export function loadProject(file: string, environment?: string): Project {
     }
     return out;
   };
-  return validateProject({ ...merge(base, load(fs.readFileSync(overlay,'utf8'))), environment });
+  return withImages({ ...merge(base, load(fs.readFileSync(overlay,'utf8'))), environment });
 }
 export const projectName = (p: Project) => `${p.name}-${p.environment}`;

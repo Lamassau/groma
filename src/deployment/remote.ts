@@ -10,14 +10,14 @@ export function run(command: string, args: string[], input?: string, capture = f
   return r.stdout ?? '';
 }
 export function ssh(p: Project, script: string, capture = false): string {
-  return run('ssh',['-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15','-p',String(p.host!.port ?? 22),'--',p.host!.ssh,'bash -se'],script,capture);
+  return run('ssh',[...(process.env.GROMA_SSH_CONFIG ? ['-F',process.env.GROMA_SSH_CONFIG] : []),'-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=15','-p',String(p.host!.port ?? 22),'--',p.host!.ssh,'bash -se'],script,capture);
 }
 const put = (name: string, data: string) => `printf '%s' ${quote(Buffer.from(data).toString('base64'))} | base64 -d > ${quote(name)}`;
 export function doctorScript(p: Project): string {
-  return `set -eu\ncommand -v ss >/dev/null\n[ "$(docker version --format '{{.Server.Version}}' | cut -d. -f1)" -ge 28 ] || { echo 'Docker Engine 28+ required' >&2; exit 1; }\ndocker info >/dev/null\ndocker compose version\ndocker compose config --help | grep -q -- --lock-image-digests\ndocker compose up --help | grep -q -- --wait-timeout\ncommand -v flock >/dev/null\ntest -d /opt/groma\ntest -w /opt/groma\n${Object.values(p.services).some(s=>s.route) ? 'sudo -n caddy validate --config /etc/caddy/Caddyfile\ngrep -Fxq "import /etc/caddy/groma/*.caddy" /etc/caddy/Caddyfile\nsystemctl is-active --quiet caddy' : ''}\n${Object.values(p.secrets ?? {}).map(s=>`test -r ${quote(s.file!)} && test -f ${quote(s.file!)}`).join('\n')}\n`;
+  return `set -eu\ncommand -v python3 >/dev/null\ncommand -v ss >/dev/null\n[ "$(docker version --format '{{.Server.Version}}' | cut -d. -f1)" -ge 28 ] || { echo 'Docker Engine 28+ required' >&2; exit 1; }\ndocker info >/dev/null\ndocker compose version\ndocker compose config --help | grep -q -- --lock-image-digests\ndocker compose up --help | grep -q -- --wait-timeout\ncommand -v flock >/dev/null\ntest -d /opt/groma\ntest -w /opt/groma\n${Object.values(p.services).some(s=>s.route) ? 'sudo -n caddy validate --config /etc/caddy/Caddyfile\ngrep -Fxq "import /etc/caddy/groma/*.caddy" /etc/caddy/Caddyfile\nsystemctl is-active --quiet caddy' : ''}\n${Object.values(p.secrets ?? {}).map(s=>`test -r ${quote(s.file!)} && test -f ${quote(s.file!)}`).join('\n')}\n`;
 }
 /** Releases contain references to host secret files, never secret contents. Host-wide lock protects ports and proxy changes. */
-export function deployScript(p: Project, release: string, rollback = false): string {
+export function deployScript(p: Project, release: string, rollback = false, approved?: { imageLock: string; currentRelease: string | null }): string {
   if (!/^[a-zA-Z0-9-]+$/.test(release)) throw new Error('Invalid release identifier');
   const name = projectName(p), root = `/opt/groma/${name}`;
   return `set -eu
@@ -31,10 +31,16 @@ if [ -L "$root/current" ]; then
   old=$(readlink -f "$root/current")
   printf '%s' ${quote(p.name + ':' + p.environment)} | cmp -s "$old/identity" - || { echo 'Project identity collision or missing release metadata' >&2; exit 1; }
 fi
+${approved ? `expected=${quote(approved.currentRelease ?? '')}
+actual=""
+if [ -n "$old" ]; then actual=$(basename "$old"); fi
+[ "$actual" = "$expected" ] || { echo 'Active release changed since plan; run plan again.' >&2; exit 1; }` : ''}
 ${rollback ? 'next=$(readlink -f "$root/previous")\ntest -f "$next/compose.yaml"' : `next="$root/releases/${release}"
 mkdir "$next"
 cd "$next"
 ${put('identity',p.name + ':' + p.environment)}
+${put('project.json',JSON.stringify(p))}
+${approved ? put('images.lock.yaml',approved.imageLock) : ''}
 ${put('compose.yaml',renderCompose(p))}
 ${put('route.caddy',renderCaddy(p))}
 ${put('routes.tsv',renderRoutes(p))}
@@ -77,6 +83,7 @@ if sudo -n test -f "$route"; then sudo -n cat "$route" > "$next/old-route.caddy"
 recover() {
   code=$?
   trap - EXIT
+  set +e
   if [ "$code" -ne 0 ]; then
     echo 'Deployment failed; attempting to restore the previous application configuration.' >&2
     if [ -n "$old" ] && [ -f "$old/compose.yaml" ]; then

@@ -19,10 +19,11 @@
     "watch": "tsc --watch",
     "test": "jest",
     "test:cov": "jest --coverage",
-    "compile": "tsc -p tsconfig.build.json",
+    "compile": "tsc -p tsconfig.build.json && node scripts/build-assets.cjs",
     "prepack": "pnpm run compile",
     "groma": "tsx src/cli.ts",
-    "test:integration": "node scripts/smoke-compose.cjs"
+    "test:integration": "node scripts/smoke-compose.cjs",
+    "test:agent": "python3 -m unittest discover -s test -p '*_test.py'"
   },
   "jest": {
     "preset": "ts-jest",
