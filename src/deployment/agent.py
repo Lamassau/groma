@@ -180,7 +180,7 @@ class Agent:
             services = {c.get('Config', {}).get('Labels', {}).get('com.docker.compose.service') for c in self.inspect(name)}
             if not set(config['services']).issubset(services):
                 raise RuntimeError('Some containers are missing; use deploy to recreate them')
-            self.compose(name, current, ['start', '--wait', '--wait-timeout', '120'])
+            self.compose(name, current, ['up', '-d', '--no-recreate', '--wait', '--wait-timeout', '120'])
         return {'project': name, 'release': current.name, 'action': action,
                 'containers': objects(self.compose(name, current, ['ps', '--all', '--format', 'json']))}
 
