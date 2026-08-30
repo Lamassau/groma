@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { load, loadAll } from 'js-yaml';
+import { load, loadAll, dump } from 'js-yaml';
 import { loadProject, validateProject, Project } from '../src/deployment/config';
 import { renderCompose, renderKubernetes, renderCaddy } from '../src/deployment/render';
 import { deployScript, doctorScript, operationScript, quote } from '../src/deployment/remote';
@@ -13,7 +13,7 @@ const fixture = (): Project => validateProject(load(starter('compose','demo')));
 
 describe('Deployment configuration boundary', () => {
   it('collects errors and rejects unsupported capabilities', () => {
-    expect(()=>validateProject({schemaVersion:2,services:{web:{image:'bad image',replicas:2}}})).toThrow(/schemaVersion:[\s\S]*replicas:/);
+    expect(()=>validateProject({schemaVersion:2,services:{web:{image:'bad image',replicas:2}}})).toThrow(/schemaVersion:[\s\S]*profile:[\s\S]*target:/);
   });
   it.each(['false',false,null,{},1])('rejects invalid service object %p', value => {
     const p: any = fixture(); p.services.web = value;
@@ -41,6 +41,11 @@ describe('Deployment configuration boundary', () => {
     const p = fixture(); p.profile = 'production';
     expect(()=>validateProject(p)).toThrow(/immutable/);
   });
+  it('rejects replicas on Compose services', () => {
+    const p: any = fixture();
+    p.services.web.replicas = 2;
+    expect(()=>validateProject(p)).toThrow(/unsupported by Compose/);
+  });
   it('loads overlays relative to the config and fails on a missing environment', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(),'groma-config-'));
     try {
@@ -49,6 +54,19 @@ describe('Deployment configuration boundary', () => {
       fs.writeFileSync(path.join(dir,'environments/staging.yaml'),'profile: shared-dev\nservices:\n  web:\n    resources: {cpu: 0.25, memory: 128Mi}\n');
       expect(loadProject(path.join(dir,'groma.yaml'),'staging').services.web.resources!.cpu).toBe(0.25);
       expect(()=>loadProject(path.join(dir,'groma.yaml'),'missing')).toThrow(/overlay not found/);
+    } finally { fs.rmSync(dir,{recursive:true,force:true}); }
+  });
+  it('allows explicit service deletion through overlays', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(),'groma-config-'));
+    try {
+      const base: any = load(starter('compose','demo'));
+      base.services.worker = {image:'busybox:1.37',command:['sleep','3600']};
+      fs.writeFileSync(path.join(dir,'groma.yaml'),dump(base,{noRefs:true,lineWidth:-1}));
+      fs.mkdirSync(path.join(dir,'environments'));
+      fs.writeFileSync(path.join(dir,'environments/staging.yaml'),'services:\n  worker: null\n');
+      const project = loadProject(path.join(dir,'groma.yaml'),'staging');
+      expect(project.services.worker).toBeUndefined();
+      expect(project.services.web).toBeDefined();
     } finally { fs.rmSync(dir,{recursive:true,force:true}); }
   });
   it('does not execute a deployment without explicit matching target approval', async () => {
@@ -79,7 +97,9 @@ describe('Target generation', () => {
   it('supports arbitrary Kubernetes services without mandatory databases or Traefik CRDs', () => {
     const p = validateProject(load(starter('kubernetes','demo')));
     p.services.worker = {image:'busybox:1.37',command:['sleep','3600']};
+    p.services.web.replicas = 3;
     const docs: any[] = loadAll(renderKubernetes(p));
+    expect(docs.find(d=>d.kind==='Deployment' && d.metadata.name==='web').spec.replicas).toBe(3);
     expect(docs.filter(d=>d.kind==='Deployment')).toHaveLength(2);
     expect(docs.some(d=>d.kind==='IngressRoute')).toBe(false);
     expect(docs.some(d=>d.kind==='Secret')).toBe(false);

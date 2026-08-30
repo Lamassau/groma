@@ -24,6 +24,7 @@ describe('Guided initialization',()=>{
     const answers:Record<string,string>={target:'kubernetes','service.0.name':'worker','service.0.public':'no','service.0.healthCommand':'[]',database:'postgres',storage:'persistent'};
     const p=await guidedProject({},async(id,_q,initial)=>answers[id]??initial);
     expect(p.services.worker.route).toBeUndefined();
+    expect(p.services.worker.replicas).toBe(1);
     expect(p.services.database.volumes![0].size).toBe('5Gi');
     expect(p.secrets!['db-password'].secretName).toBe('my-app-database');
   });

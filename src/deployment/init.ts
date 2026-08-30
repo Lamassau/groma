@@ -6,7 +6,7 @@ import { Project, AppService, validateProject } from './config';
 export interface InitOptions {
   target?: string; name?: string; environment?: string; host?: string; sshPort?: number;
   context?: string; image?: string; domain?: string; port?: number; hostPort?: number;
-  healthPath?: string; healthCommand?: string[]; database?: string; storage?: string; secretFile?: string;
+  healthPath?: string; healthCommand?: string[]; database?: string; storage?: string; secretFile?: string; replicas?: number;
 }
 export type Ask = (id: string, question: string, initial: string) => Promise<string>;
 export function starterProject(options: InitOptions = {}): Project {
@@ -18,6 +18,7 @@ export function starterProject(options: InitOptions = {}): Project {
       : {kubernetes: {context: options.context ?? 'your-context', ingressClass: 'nginx'}}),
     services: {web: {
       image: options.image ?? 'nginx:1.28-alpine', port: options.port ?? 80,
+      ...(target === 'kubernetes' ? {replicas: options.replicas ?? 1} : {}),
       healthcheck: options.healthCommand ?? ['wget','-q','-O','/dev/null',`http://127.0.0.1:${options.port ?? 80}${options.healthPath ?? '/'}`],
       route: {domain:options.domain ?? `${name}.example.com`, healthPath:options.healthPath ?? '/',
         ...(target === 'compose' ? {hostPort:options.hostPort ?? 18080} : {})},
@@ -82,6 +83,7 @@ export async function guidedProject(options: InitOptions = {}, providedAsk?: Ask
       const service = await checked(`service.${index}.name`,'Service name',index === 0 ? 'web' : 'worker',s=>nameCheck(s) && !Object.hasOwn(p.services,s),'Invalid or duplicate service name');
       const image = await checked(`service.${index}.image`,'Container image',options.image ?? 'nginx:1.28-alpine',s=>/^[a-zA-Z0-9][a-zA-Z0-9./:@_-]+$/.test(s),'Invalid image reference');
       const s: AppService = {image};
+      if (target === 'kubernetes') s.replicas = Number(await checked(`service.${index}.replicas`,'Replica count',String(options.replicas ?? 1),integer(1,1000),'Invalid replica count'));
       const publicRoute = await checked(`service.${index}.public`,'Expose through public HTTPS? (yes/no)',index === 0 ? 'yes':'no',s=>['yes','no'].includes(s),'Choose yes or no');
       if (publicRoute === 'yes') {
         s.port=Number(await checked(`service.${index}.port`,'Container HTTP port',String(options.port ?? 80),integer(1,65535),'Invalid port'));

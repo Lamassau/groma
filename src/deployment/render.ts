@@ -61,7 +61,7 @@ export function renderKubernetes(p: Project): string {
       volumes.push({name:`secret-${secret}`,secret:{secretName:ref.secretName,items:[{key:ref.key,path:secret}]}});
       volumeMounts.push({name:`secret-${secret}`,mountPath:`/run/secrets/${secret}`,subPath:secret,readOnly:true});
     }
-    add('apps/v1','Deployment',name,{spec:{replicas:1, ...(s.volumes?.some(v=>v.mode==='persistent') ? {strategy:{type:'Recreate'}} : {}), selector:{matchLabels:labels},template:{metadata:{labels},spec:{containers:[{
+    add('apps/v1','Deployment',name,{spec:{replicas:s.replicas ?? 1, ...(s.volumes?.some(v=>v.mode==='persistent') ? {strategy:{type:'Recreate'}} : {}), selector:{matchLabels:labels},template:{metadata:{labels},spec:{containers:[{
       name,image:s.image,
       ...(s.command ? {args:s.command} : {}),
       ...(s.port ? {ports:[{containerPort:s.port}]} : {}),

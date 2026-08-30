@@ -55,6 +55,9 @@ export class FullStackChart extends Chart {
       throw new Error("externalSecretStore.name is required for external-secrets");
     }
 
+    /** @deprecated Use FullStackChart. Kept for compatibility with older imports. */
+    export const ModernFullStackChart = FullStackChart;
+
     // ── 1. Namespace (with Pod Security Standards) ──
     new Namespace(this, "ns", {
       metadata: {
