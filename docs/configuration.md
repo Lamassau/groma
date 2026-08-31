@@ -1,89 +1,170 @@
 # Configuration reference
 
-All configuration is runtime validated. The version is `schemaVersion: 1`. Service and application names start with a lowercase letter and contain at most 30 lowercase letters, digits or hyphens.
+All configuration is runtime validated. The current version remains `schemaVersion: 1`; the additions below are backward-compatible. Service/application names start with a lowercase letter and contain at most 30 lowercase letters, digits or hyphens. Unknown fields fail validation.
 
-## Profiles
+## Profiles and production image locks
 
 | Profile | Defaults and validation |
 | --- | --- |
-| local | One instance per service, 0.5 CPU / 256Mi maximum unless overridden. |
-| shared-dev | Same economical limits; storage must explicitly select persistent or ephemeral. No implicit backup or autoscaling jobs. |
-| production | Same explicit resource model, every image must use a sha256 digest and every service must have a healthcheck. Kubernetes routes must reference a TLS Secret. |
+| local | One instance per service, 0.5 CPU / 256Mi unless overridden. |
+| shared-dev | Same economical defaults; storage explicitly chooses persistent or ephemeral. |
+| production | Every effective image must be an immutable `@sha256:` reference and every service needs a healthcheck. Kubernetes routes also require a TLS Secret. |
 
-Profiles do not promise backup coverage or availability. Resource limits are per container, not reservations or a guarantee that the host has enough capacity. Account for the sum across all apps and for Docker, Caddy and the operating system.
+A production YAML may keep readable tags when they are pinned in `deploy/images.lock.yaml`:
 
-## Environment overrides
-
-Place overrides in `environments/<name>.yaml`, relative to the base configuration. Objects merge and arrays replace. Keep one target type per base file; use separate base files for Compose and Kubernetes rather than mixing host/context settings.
-
-To intentionally remove a service from the base config, set that service to `null` in the overlay:
-
-```yaml
-services:
-  worker: null
+```bash
+groma pin --env production
+groma validate --env production
+groma pin --env production --check
 ```
 
+The lock stores each service's source tag, resolved digest and resolution time. `validate` applies a matching lock before production digest validation. Explicit `--image service=image@sha256:...` overrides are applied last, so CI-built digests still win. `plan` reports when a locked tag resolves to a different digest; `pin --check` exits nonzero when a refresh is needed.
+
+## Shared defaults and overlay precedence
+
+The top-level `environment` field already means the **deployment environment name**, so schema v1 does not reuse it for service environment variables. Use additive `defaults` instead:
+
 ```yaml
-# environments/staging.yaml
+schemaVersion: 1
+name: demo
+environment: dev
 profile: shared-dev
-host:
-  ssh: deploy@staging.example.com
+target: compose
+
+defaults:
+  environment:
+    NODE_ENV: production
+    LOG_LEVEL: info
+  resources:
+    cpu: 0.5
+    memory: 256Mi
+```
+
+Effective precedence is:
+
+```text
+base defaults < base service < overlay defaults < overlay service
+```
+
+Place overlays in `environments/<name>.yaml`. Objects merge, arrays replace, and `services.<name>: null` removes an inherited service. Missing overlays are errors.
+
+## Routing: same-origin paths
+
+Multiple services can share one hostname when their `(domain, path)` pairs differ:
+
+```yaml
 services:
   web:
+    image: ghcr.io/example/web:dev
+    port: 3000
+    healthcheck: {http: /health}
     route:
-      domain: staging.example.com
+      domain: app.example.com
+      hostPort: 18080
+
+  api:
+    image: ghcr.io/example/api:dev
+    port: 4000
+    healthcheck: {http: /v1/health}
+    route:
+      domain: app.example.com
+      path: /api
+      rewritePrefix: /v1
       hostPort: 18081
 ```
 
-Use `groma validate --env staging`. Missing overlays are errors, never a fallback to dev.
+Path routes are emitted before the bare-domain fallback. `stripPathPrefix: true` turns `/api/foo` into `/foo`; `rewritePrefix: /v1` turns it into `/v1/foo`. The two options are mutually exclusive and require a non-root `route.path`.
 
-## Secrets and databases
+For Kubernetes, `route.path` renders an Ingress path. Path rewriting uses nginx Ingress rewrite annotations and therefore requires an nginx ingress class when an explicit class is configured. The public verifier prefixes a route-scoped health URL automatically, e.g. `path: /api` + `healthPath: /health` verifies `/api/health`.
 
-GROMa never collects passwords or uploads secret values. Provision a file separately on the host with restrictive permissions, readable by the deployment account and Docker daemon. Grant a service only the secrets it needs. Compose secrets are file mounts, not encrypted storage or a secret manager. The application image must support reading the file; GROMa does not automatically convert it to an environment variable.
+## Healthchecks
+
+Raw exec arrays remain supported:
+
+```yaml
+healthcheck: [node, healthcheck.js]
+```
+
+HTTP sugar is additive:
+
+```yaml
+port: 3000
+healthcheck: {http: /v1/health/live}
+```
+
+Kubernetes renders a native `httpGet` probe. Compose renders a shell probe that tries `wget`, then `curl`, then `node`, and fails with an explicit requirement message if none exists. Raw exec arrays never gain an implicit shell. When a Compose deployment times out on health, GROMa identifies unhealthy services and prints the most recent health-check output; treat that output like application logs because it may contain sensitive text.
+
+## Secrets and `secretEnv`
+
+Secret values never belong in YAML or command-line arguments. Compose references existing host files; Kubernetes references existing Secret objects:
 
 ```yaml
 secrets:
   db-password:
     file: /opt/groma-secrets/demo/db-password
+
 services:
-  database:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_DB: demo
-      POSTGRES_USER: demo
-      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+  api:
+    image: ghcr.io/example/api:dev
     secrets: [db-password]
-    healthcheck: [pg_isready, -U, demo, -d, demo]
-    volumes:
-      - name: data
-        mount: /var/lib/postgresql/data
-        mode: persistent
-    resources: {cpu: 0.5, memory: 512Mi}
+    secretEnv:
+      MYSQL_PASSWORD: db-password
 ```
 
-This is a fragment to merge into a complete config. For disposable data use `mode: ephemeral`, which renders a tmpfs in Compose and an emptyDir in Kubernetes. These have different lifetimes: tmpfs is lost when the container stops; emptyDir is lost when the pod is deleted. Keep appropriate memory capacity for tmpfs. Persistent Kubernetes volumes additionally require `size: 5Gi` and optionally `kubernetes.storageClass`.
+On Compose, GROMa also renders `MYSQL_PASSWORD_FILE=/run/secrets/db-password`. At deployment time it inspects the pulled image's ENTRYPOINT/CMD, mounts a release-local entrypoint shim, and preserves the original process arguments. The shim exports `MYSQL_PASSWORD` from the secret file before the application starts, strips trailing newlines, and fails loudly naming the variable when the file is unreadable or empty. If `MYSQL_PASSWORD` is explicitly set in `environment`, that plain value wins and the file is not read for that variable.
 
-For an external database, omit the database service and configure your application's connection using its supported file-secret mechanism. GROMa does not require dummy database settings.
+The current Compose shim requires `/bin/sh` in the application image. Distroless/scratch images fail closed with a clear message; for those images use native `*_FILE` support or Kubernetes until GROMa ships an architecture-specific static shim. Kubernetes does not use the shim: it renders `env.valueFrom.secretKeyRef` directly.
 
-Kubernetes equivalent secret declaration:
+Provision configured Compose secret files without exposing values in shell history:
+
+```bash
+printf '%s' "$VALUE" | groma secret set db-password --stdin \
+  --yes --expect-target deploy@host.example.com
+groma secret list
+```
+
+`secret list` returns only names, file modes and modification times, never values.
+
+## Volumes
+
+Disposable storage:
 
 ```yaml
-secrets:
-  db-password:
-    secretName: demo-database
-    key: password
+volumes:
+  - name: cache
+    mount: /cache
+    mode: ephemeral
 ```
 
-The existing Secret must be in the application's namespace (`<name>-<environment>`). Mounts use subPath and do not update in a running pod after rotation; restart/redeploy the workload when rotating the Secret. No plaintext Secret resources are generated by the new renderer.
+GROMa-managed persistent storage:
 
-## Targets and unsupported features
+```yaml
+volumes:
+  - name: data
+    mount: /var/lib/postgresql/data
+    mode: persistent
+```
 
-Compose host settings: `ssh: user@hostname` (or IPv4), optional integer `port` (default 22). SSH aliases without a user and IPv6 literal targets are not supported in schema v1. SSH keys/configuration are managed by OpenSSH. Every routed service needs a unique `route.hostPort` (1024–65535).
+Adopt an existing Docker named volume in place:
 
-Kubernetes settings: explicit `context`, optional `ingressClass`, `tlsSecret`, `storageClass`. Routing requires an installed ingress controller. Kubernetes startup dependencies, autoscaling, privileged containers, arbitrary host mounts and raw backend-specific overrides are intentionally rejected by this schema. Advanced Kubernetes users can continue using the exported CDK8s constructs.
+```yaml
+volumes:
+  - name: data
+    mount: /var/lib/postgresql/data
+    mode: persistent
+    external: legacy_project_db_data
+```
 
-The `command` field maps to Compose command / Kubernetes args, preserving image ENTRYPOINT. Healthchecks are exec arrays on both targets. An HTTP check therefore requires an HTTP client or suitable language runtime inside the image. No shell or curl is assumed.
+`external` is Compose-only and never creates/deletes the referenced volume. `plan` warns when a new GROMa-managed persistent volume would be created while another project appears to have a same-logical-name volume, so migrations do not silently start against empty storage.
 
-The generic Kubernetes renderer currently creates Deployments, Services, Ingress and optional PVCs. Replicas default to `1` and can be set per service with `services.<name>.replicas`. It does not create NetworkPolicies, install CRDs, guarantee Pod Security admission compatibility, or automatically provision TLS. Review those cluster requirements before production.
+Persistent Kubernetes volumes additionally require `size: 5Gi` and optionally `kubernetes.storageClass`.
 
-Public routes also accept healthPath, expectedStatus and expectedAddresses for DNS/TLS/health verification. See [operations](operations.md) for validation and retry behavior.
+## Targets and command support
+
+Compose host settings: `ssh: user@hostname` (or IPv4), optional `port` (default 22). SSH uses `StrictHostKeyChecking=yes` and `BatchMode=yes`.
+
+Kubernetes settings: explicit `context`, optional `ingressClass`, `tlsSecret`, `storageClass`. GROMa does not install Kubernetes, an ingress controller, cert-manager or CRDs.
+
+`apps`, `start`, `stop`, `prune`, `releases`, `secret set/list`, `host setup`, and `host adopt` are Compose-only. `status`, `logs`, `exec`, `plan`, `deploy`, `verify`, and `rollback` support their documented target behavior. Mutating target operations retain the `--yes --expect-target ...` guard.
+
+See [Adopting an existing application](adoption.md) and [operations](operations.md) for migration and operational commands.

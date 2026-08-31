@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  id-token: write
 
 jobs:
   # ── Step 1: Release Please ──────────────────────────────────────────────────
@@ -54,6 +55,7 @@ jobs:
         with:
           node-version: "20"
           cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -75,6 +77,13 @@ jobs:
           tar -czf release-assets/example-manifests.tar.gz -C dist compose kubernetes
           npm pack --ignore-scripts --pack-destination release-assets
           echo "synth_succeeded=true" >> "$GITHUB_OUTPUT"
+
+      - name: Publish @lamassau/groma to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo 'NPM_TOKEN repository secret is required to publish GROMa releases.' >&2; exit 1; }
+          npm publish --access public --provenance
 
       - name: Upload manifest archives to release
         if: ${{ steps.synth.outputs.synth_succeeded == 'true' }}

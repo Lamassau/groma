@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       groma-ref:
-        description: Reviewed 40-character Lamassau/groma commit SHA
+        description: Reviewed 40-character Lamassau/groma commit SHA; must match the toolkit checkout
         required: true
         type: string
       config-path:
@@ -22,13 +22,16 @@ on:
         type: string
         default: ''
       services:
-        description: JSON array of service, context and dockerfile build definitions
+        description: JSON service build definitions; supports target, buildArgs, platforms and BuildKit secret IDs
         type: string
         default: '[{"service":"web","context":".","dockerfile":"Dockerfile"}]'
     secrets:
       SSH_PRIVATE_KEY:
         required: false
       SSH_KNOWN_HOSTS:
+        required: false
+      BUILD_SECRETS:
+        description: Optional JSON object mapping requested BuildKit secret IDs to values
         required: false
 permissions:
   contents: read
@@ -46,6 +49,7 @@ jobs:
     outputs:
       matrix: ${{ steps.contract.outputs.matrix }}
       project: ${{ steps.contract.outputs.project }}
+      toolkit_ref: ${{ inputs.groma-ref }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -70,6 +74,7 @@ jobs:
         run: node toolkit/scripts/ci-contract.cjs
         env:
           APP_ROOT: ${{ github.workspace }}/app
+          GROMA_TOOLKIT_REF: ${{ inputs.groma-ref }}
           GROMA_INPUT: ${{ toJSON(inputs) }}
       - name: Require production approval policy
         if: inputs.environment == 'production'
@@ -87,7 +92,7 @@ jobs:
   build:
     needs: validate
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: write
@@ -100,12 +105,39 @@ jobs:
         with:
           path: app
           persist-credentials: false
+      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Prepare BuildKit secret files
+        id: build-secrets
+        shell: bash
+        env:
+          REQUESTED: ${{ toJSON(matrix.secrets) }}
+          BUNDLE: ${{ secrets.BUILD_SECRETS }}
+        run: |
+          set -eu
+          dir="$RUNNER_TEMP/groma-build-secrets-${{ matrix.service }}"
+          install -d -m 700 "$dir"
+          export SECRET_DIR="$dir"
+          node <<'NODE'
+          const fs=require('node:fs'),path=require('node:path');
+          const requested=JSON.parse(process.env.REQUESTED||'[]');
+          let bundle={};
+          if(requested.length) {
+            if(!process.env.BUNDLE) throw new Error('This service requests BuildKit secrets; map BUILD_SECRETS to a protected JSON secret');
+            bundle=JSON.parse(process.env.BUNDLE);
+          }
+          const lines=[];
+          for(const id of requested) {
+            if(typeof bundle[id]!=='string'||bundle[id].length===0) throw new Error(`BUILD_SECRETS is missing ${id}`);
+            const file=path.join(process.env.SECRET_DIR,id); fs.writeFileSync(file,bundle[id],{mode:0o600}); lines.push(`${id}=${file}`);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,`files<<GROMA_EOF\n${lines.join('\n')}\nGROMA_EOF\n`);
+          NODE
       - name: Image coordinates
         id: coordinates
         env:
@@ -118,8 +150,15 @@ jobs:
         with:
           context: app/${{ matrix.context }}
           file: app/${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-args: ${{ matrix.buildArgsText }}
+          platforms: ${{ matrix.platformsText }}
+          secret-files: ${{ steps.build-secrets.outputs.files }}
           push: true
           tags: ${{ steps.coordinates.outputs.image }}:${{ github.sha }}
+      - name: Remove BuildKit secret files
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/groma-build-secrets-${{ matrix.service }}"
       - name: Record immutable image
         env:
           SERVICE: ${{ matrix.service }}
@@ -148,7 +187,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Lamassau/groma
-          ref: ${{ inputs.groma-ref }}
+          ref: ${{ needs.validate.outputs.toolkit_ref }}
           path: toolkit
           persist-credentials: false
       - uses: pnpm/action-setup@v4
@@ -181,4 +220,5 @@ jobs:
           IMAGE_DIRECTORY: ${{ github.workspace }}/image-records
           GROMA_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           GROMA_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          GROMA_TOOLKIT_REF: ${{ needs.validate.outputs.toolkit_ref }}
           GROMA_INPUT: ${{ toJSON(inputs) }}

@@ -1,4 +1,4 @@
-# Copy into an application repository's .github/workflows/ after replacing the SHA and host.
+# Copy into an application repository's .github/workflows/ after replacing the reviewed GROMa SHA and host.
 name: Deploy dev
 on:
   push:
