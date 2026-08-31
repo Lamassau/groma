@@ -8,7 +8,7 @@ This release adds guided setup, public deployment verification, a host overview,
 
 The wizard asks for target, application/environment names, SSH host/port or Kubernetes context, service names and images, public/private routing, container/host ports, public health path, an exec healthcheck, and optional PostgreSQL/MySQL with persistent or ephemeral storage. It can add multiple services including workers without public routes.
 
-It does not collect secret values. The MySQL preset uses separate application and root password files (the root file defaults to the application password path plus `.root`). Database presets reference files you provision on the host, or existing Kubernetes Secrets. Applications must be configured to connect to the selected database; GROMa cannot infer your app's environment variable names. The default wget healthcheck requires wget inside the image; replace it with a command your image actually supports. An empty array in the wizard explicitly disables the container healthcheck.
+It does not collect secret values. The MySQL preset uses separate application and root password files (the root file defaults to the application password path plus `.root`). Database presets reference files you provision on the host, or existing Kubernetes Secrets. Applications must be configured to connect to the selected database; GROMa cannot infer your app's environment variable names. For HTTP services you can use `healthcheck: {http: /health}`; Compose probes with wget/curl/node when available and Kubernetes emits native HTTP probes. Raw exec arrays remain supported. If a Compose HTTP probe cannot find a supported executable, deployment diagnostics name the service and explain the image requirement. An empty array in the wizard explicitly disables the container healthcheck.
 
 A non-interactive example:
 
@@ -71,7 +71,7 @@ groma plan
 groma plan --image web=ghcr.io/example/demo@sha256:YOUR_DIGEST --json
 ```
 
-Compose plans compare the previous release's locked image references with freshly resolved candidate digests. The registry is consulted without pulling images or changing containers/releases. This detects a moved tag even if the configured tag text is unchanged. Registry errors fail the plan instead of guessing.
+Compose plans compare the previous release's locked image references with the candidate configuration. When `deploy/images.lock.yaml` exists, `plan` also reports whether any recorded source tag has moved since `groma pin`. Use `groma pin --check` as a CI gate when production configuration intentionally keeps human-readable tags. Registry errors fail closed instead of guessing. Plans also warn when a new GROMa persistent volume appears to have a same-named predecessor from another Compose project, which is a common migration/data-loss signal.
 
 Plans include added/removed/changed services, old/new image digests, changed field names, routing before/after, and storage/secret-reference risk flags. Environment and command **values** are never printed in the structured plan. Treat your config as non-secret anyway; applications may still log credentials elsewhere.
 
@@ -80,6 +80,38 @@ Plans include added/removed/changed services, old/new image digests, changed fie
 Service removals require `--allow-service-removal`. Changes to existing storage require `--allow-storage-change`. These flags supplement `--yes --expect-target`; they never authorize deleting volume data.
 
 Plans compare saved release configuration, not arbitrary runtime changes made outside GROMa. Kubernetes retains `kubectl diff`; the detailed Compose plan format and storage acknowledgements do not apply to Kubernetes.
+
+## Run one-off commands safely
+
+`groma exec` runs against the current release rather than guessing a container name:
+
+```bash
+groma exec api --yes --expect-target deploy@dev.example.com -- npm run migrate
+printf 'select 1;\n' | groma exec database --yes --expect-target deploy@dev.example.com -- psql -U demo
+```
+
+The command is passed as an argv vector and stdin/stdout remain attached, avoiding nested host/container command substitution. It is treated as a mutation and therefore requires the normal target confirmation.
+
+## Provision and inspect secret files
+
+Compose secret values are accepted only on stdin:
+
+```bash
+printf '%s' "$DB_PASSWORD" | groma secret set db-password --stdin --yes --expect-target deploy@dev.example.com
+groma secret list
+```
+
+`secret set` never accepts a value in argv, never echoes it, writes atomically with mode `0400`, and uses the configured host path. `secret list` returns names, modes and modification times only. Kubernetes secrets remain provisioned through Kubernetes tooling/secret managers.
+
+## Incident logs and release history
+
+```bash
+groma logs api --tail 500 --since 2h
+groma logs api --follow --since 10m
+groma releases
+```
+
+Log output may contain application secrets; the warning is intentional. `releases` reports release timestamps, recorded deployer, requested images and active/previous markers without returning environment or secret values.
 
 ## Stop and start without changing releases
 

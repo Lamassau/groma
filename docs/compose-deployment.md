@@ -23,19 +23,21 @@ The script:
 
 Review existing firewall use before execution: this is intended for a dedicated/new host, not an arbitrary multi-purpose server. Keep DigitalOcean console access available. Do not close an existing SSH session until a fresh connection succeeds. Reconnect to pick up new group membership.
 
-For an already prepared server, skip setup. Create the directories with appropriate ownership and add this exact line to the managed Caddyfile:
+For an already prepared Docker+Caddy server, use the additive adoption path instead of full setup:
 
-```caddy
-import /etc/caddy/groma/*.caddy
+```bash
+groma host adopt > adopt.sh
+# review the script
+groma host adopt --execute --yes --expect-target deploy@your-host
 ```
 
-Then run `groma doctor`. No paid DigitalOcean API service or Kubernetes cluster is required.
+It creates the GROMa directories, verifies Docker access, appends `import /etc/caddy/groma/*.caddy` only when missing, validates/reloads Caddy, and does **not** install packages or change UFW/unrelated proxy routes. Then run `groma doctor`. No paid DigitalOcean API service or Kubernetes cluster is required.
 
 ## 3. Images, secrets and DNS
 
 Build and push the app image outside GROMa. Authenticate the deployment account to a private registry on the droplet independently; credentials remain in that account's Docker configuration. Do not place registry credentials in groma.yaml.
 
-Provision application secret files separately with restrictive permissions. See configuration.md for file mounts and `_FILE` variables.
+Provision application secret files with `groma secret set NAME --stdin --yes --expect-target ...` or an external secret-management workflow. Values are never accepted in argv or printed. `secretEnv` can map a file secret into a normal application environment variable; see configuration.md for the Compose shim/Kubernetes `secretKeyRef` behavior.
 
 Point each public domain at the droplet and permit 80/443 through the cloud firewall. Certificates depend on publicly reachable, correct DNS. GROMa does not change DNS records. Deployment verifies external HTTPS afterward, and `groma verify` can repeat the checks independently.
 
@@ -43,7 +45,7 @@ Docker-published ports can bypass UFW rules. GROMa publishes only loopback ports
 
 ## 4. Deploy and inspect
 
-Run validate, doctor, plan, then deploy with the explicit target. Plan is read-only. Compose plan resolves candidate image digests and compares services, routes and storage against the last successful release. It detects moved image tags, but is not a general runtime drift detector. See operations.md for risk acknowledgements.
+Run validate, doctor, plan, then deploy with the explicit target. For tagged production overlays, run `groma pin --env production` first; validation reads `deploy/images.lock.yaml`, `plan` reports lock drift, and `groma pin --check` is the CI gate. Compose plan also warns when a new persistent volume would be created while a likely same-logical-name volume exists under another Compose project. Use `volumes[].external` to adopt existing data intentionally.
 
 Deployment holds a host-wide lock, checks domain/port ownership, rejects an unmanaged same-name Compose project, creates a private release directory, validates Compose, resolves image digests into an override, pulls images, and waits for health checks (120 seconds). It updates Caddy only after services are healthy, validates and reloads the proxy, then atomically advances the current symlink.
 
@@ -59,7 +61,9 @@ groma rollback --yes --expect-target deploy@your-host
 
 Rollback reuses the previous successful release. It does not roll back migrations, database contents, secret files or other external dependencies. Use backward-compatible migrations. Back up and test restoration separately before production.
 
-Successful releases live under `/opt/groma/<app>-<environment>/releases`, with current and previous symlinks. Use `groma prune` to preview release cleanup and add `--execute --yes --expect-target` only after reviewing candidates. Current, previous and in-use releases are protected; named volumes are never deleted. Application log output may contain secrets; GROMa does not pretend it can reliably redact arbitrary application logs.
+Successful releases live under `/opt/groma/<app>-<environment>/releases`, with current and previous symlinks. `groma releases` surfaces their timestamps, images, deploy actor, and active/previous markers. Use `groma prune` to preview release cleanup and add `--execute --yes --expect-target` only after reviewing candidates. Current, previous and in-use releases are protected; named volumes are never deleted.
+
+For incidents, `groma logs SERVICE --follow --since 2h --tail 500` streams logs and `groma exec SERVICE -- COMMAND --yes --expect-target ...` streams stdin/stdout against the current release. Application/healthcheck output may contain secrets; GROMa does not pretend it can reliably redact arbitrary application logs.
 
 ## Live acceptance checklist
 

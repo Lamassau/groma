@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { load } from 'js-yaml';
 import { starterProject, serializeProject } from '../src/deployment/init';
 
 jest.mock('../build/deployment/config',()=>require('../src/deployment/config'),{virtual:true});
-const {contract,requireReviewers}=require('../scripts/ci-contract.cjs');
+const {contract,requireReviewers,buildDefinition}=require('../scripts/ci-contract.cjs');
 const {collectImages}=require('../scripts/ci-deploy.cjs');
 
 describe('Reusable workflow safety contract',()=>{
@@ -16,12 +17,21 @@ describe('Reusable workflow safety contract',()=>{
     fs.writeFileSync(path.join(root,'groma.yaml'),serializeProject(starterProject({host:'deploy@host.example.com'})));
   });
   afterEach(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const input=()=>({environment:'dev',target:'deploy@host.example.com',gromaRef:'a'.repeat(40),config:'groma.yaml',overlay:'',services:JSON.stringify([{service:'web',context:'.',dockerfile:'Dockerfile'}])});
+  const toolkitHead=()=>execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+  const input=()=>({environment:'dev',target:'deploy@host.example.com',gromaRef:toolkitHead(),config:'groma.yaml',overlay:'',services:JSON.stringify([{service:'web',context:'.',dockerfile:'Dockerfile'}])});
   it('validates build definitions and explicit target',()=>{
     expect(contract(input(),root).matrix).toHaveLength(1);
     expect(()=>contract({...input(),target:'deploy@other.example.com'},root)).toThrow(/target/);
     expect(()=>contract({...input(),gromaRef:'main'},root)).toThrow(/commit SHA/);
     expect(()=>contract({...input(),services:'[{"service":"web","context":"../outside","dockerfile":"Dockerfile"}]'},root)).toThrow(/context/);
+  });
+  it('accepts reviewed target, build args, platforms and secret IDs without accepting secret values',()=>{
+    const item=buildDefinition({service:'web',context:'.',dockerfile:'Dockerfile',target:'production',buildArgs:{PUBLIC_URL:'https://example.com'},platforms:['linux/amd64','linux/arm64'],secrets:['NPM_TOKEN']},new Set());
+    expect(item.target).toBe('production');
+    expect(item.buildArgsText).toContain('PUBLIC_URL=https://example.com');
+    expect(item.platformsText).toBe('linux/amd64,linux/arm64');
+    expect(()=>buildDefinition({service:'web',context:'.',dockerfile:'Dockerfile',buildArgs:{BAD:'one\ntwo'}},new Set())).toThrow(/buildArgs/);
+    expect(()=>buildDefinition({service:'web',context:'.',dockerfile:'Dockerfile',secrets:['TOKEN=value']},new Set())).toThrow(/secret IDs/);
   });
   it('refuses accidental production deployment via a dev environment',()=>{
     const p=starterProject({host:'deploy@host.example.com'});p.profile='production';
@@ -42,13 +52,19 @@ describe('Reusable workflow safety contract',()=>{
     fs.writeFileSync(path.join(root,'web.json'),JSON.stringify({service:'web',image:'ghcr.io/org/app-web:latest'}));
     expect(()=>collectImages(root,['web'])).toThrow(/Invalid/);
   });
-  it('binds the deploy job to the environment and never runs for a pull request',()=>{
+  it('verifies the explicit toolkit SHA and supports richer builds',()=>{
     const workflow:any=load(fs.readFileSync('.github/workflows/deploy.yml','utf8'));
     expect(workflow.on.workflow_call).toBeDefined();
+    expect(workflow.on.workflow_call.inputs['groma-ref'].required).toBe(true);
     expect(workflow.jobs.validate.if).toContain("github.event_name == 'push'");
     expect(workflow.jobs.validate.if).not.toContain('pull_request');
     expect(workflow.jobs.deploy.environment).toBe('${{ inputs.environment }}');
     expect(workflow.concurrency['cancel-in-progress']).toBe(false);
-    expect(workflow.jobs.deploy.steps.some((s:any)=>s.name==='Recheck production approval policy')).toBe(true);
+    const toolkitCheckout=workflow.jobs.validate.steps.find((s:any)=>s.with?.repository==='Lamassau/groma');
+    expect(toolkitCheckout.with.ref).toBe('${{ inputs.groma-ref }}');
+    const build=workflow.jobs.build.steps.find((s:any)=>s.uses==='docker/build-push-action@v6');
+    expect(build.with.target).toBe('${{ matrix.target }}');
+    expect(build.with.platforms).toBe('${{ matrix.platformsText }}');
+    expect(build.with['secret-files']).toBe('${{ steps.build-secrets.outputs.files }}');
   });
 });

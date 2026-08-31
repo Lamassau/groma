@@ -1,61 +1,71 @@
 # Reusable GitHub Actions deployment
 
-`.github/workflows/deploy.yml` is a reusable **Compose/droplet** workflow. It validates configuration and build inputs, builds one or several services, pushes images to GHCR, downloads the resulting digest records in the deploy job, and invokes GROMa with immutable image overrides. Public DNS/TLS/health verification is mandatory in this workflow.
+`.github/workflows/deploy.yml` is a reusable **Compose/droplet** workflow. It validates configuration and build inputs, builds one or several services, pushes images to GHCR, downloads immutable digest records in the deploy job, and invokes GROMa with `--image` overrides. Public DNS/TLS/health verification remains mandatory.
 
-This workflow is callable only; adding it to GROMa does not deploy any application. It accepts calls originating from push or workflow_dispatch, never from pull-request events. No cloud access, secrets or repository settings are provisioned by committing this file.
+The workflow is callable only. It does not provision cloud resources, secrets, DNS, repository settings, or environment protection.
 
-## One-time prerequisites in the application repository
+## Pin the reusable workflow
 
-1. Prepare the target host and a verified SSH host key; install Python 3 on older prepared hosts.
-2. Commit your app's groma.yaml, Dockerfile(s), and any environment overlays. The app must expose its health endpoint and include its container healthcheck executable.
-3. Create a GitHub deployment environment named `dev`, `staging`, or `production`.
-4. Put `SSH_PRIVATE_KEY` and `SSH_KNOWN_HOSTS` in that environment. Obtain known_hosts from a separately verified host key, not a blind ssh-keyscan in CI. Custom SSH ports need OpenSSH's `[host]:port` known_hosts form.
-5. For production, configure **required reviewers**, **prevent self-review**, appropriate deployment branch restrictions, and protect the workflow/config branches. The workflow checks reviewer policy before builds and again before deployment; missing policy or API access fails closed. Environment features depend on your GitHub plan/repository visibility. If your repository cannot enforce reviewers, this workflow deliberately refuses production.
-6. Permit the caller workflow `contents: read`, `actions: read`, and `packages: write`. Configure GHCR package access for the repository. The deploy account on the droplet needs independent read access to private GHCR images; its Docker credentials are not sent from CI.
-7. Select a reviewed full GROMa commit SHA containing the reusable workflow and use that same SHA for both the `uses` ref and `groma-ref`. No unpinned install script or moving GROMa branch is fetched.
+Call the workflow by a reviewed full commit SHA:
 
-The workflow never changes repository protections or grants permissions. Environment secrets are consumed by the reusable workflow's environment-bound deploy job. Alternatively caller-mapped secrets are supported, but **production SSH credentials should live in the protected production environment**, not broad repository secrets.
+```yaml
+jobs:
+  deploy:
+    uses: Lamassau/groma/.github/workflows/deploy.yml@REVIEWED_40_CHARACTER_SHA
+    with:
+      environment: dev
+      expected-target: deploy@dev.example.com
+      groma-ref: REVIEWED_40_CHARACTER_SHA
+      config-path: groma.yaml
+```
 
-## Automatic dev deployment
+Set `groma-ref` to the same reviewed 40-character SHA used in `uses:`. The workflow checks that the toolkit checkout's actual `HEAD` equals `groma-ref`, so a mismatched pair fails before build or deploy. GitHub does not expose a trustworthy reusable-workflow self-ref inside the called workflow, so GROMa deliberately keeps this duplicate pin rather than infer the caller's workflow ref incorrectly.
 
-Copy [the dev caller example](../examples/workflows/deploy-dev.yml) into the application's `.github/workflows/deploy-dev.yml`. Replace the SHA and target. Every push to main builds and deploys dev. No required reviewers on dev means no manual gate.
+## One-time prerequisites
 
-Inputs:
+1. Prepare the target host and a separately verified SSH host key.
+2. Commit `groma.yaml`, Dockerfiles and environment overlays.
+3. Create a GitHub deployment environment named `dev`, `staging` or `production`.
+4. Put `SSH_PRIVATE_KEY` and `SSH_KNOWN_HOSTS` in that environment. Do not generate trusted host keys blindly inside the workflow.
+5. For production, configure **required reviewers**, **prevent self-review**, branch restrictions and protected workflow/config branches. GROMa checks reviewer policy before builds and again before deployment and fails closed if the policy cannot be verified.
+6. Permit the caller `contents: read`, `actions: read` and `packages: write`; configure GHCR package access. The target host needs independent pull access for private images.
 
-| Input | Meaning |
-| --- | --- |
-| `environment` | GitHub deployment environment: dev, staging or production. |
-| `expected-target` | Exact user@host in the effective config. |
-| `groma-ref` | Full reviewed GROMa commit SHA. |
-| `config-path` | Application-relative base config, default groma.yaml. |
-| `overlay` | Optional environments/NAME.yaml selection; empty uses the base config. |
-| `services` | JSON build definitions with service, context and dockerfile. Defaults to web from ./Dockerfile. |
+## Build definitions
 
-For two images:
+The `services` input is a JSON array. Each build definition may include `service`, `context`, `dockerfile`, `target`, `buildArgs`, `platforms` and `secrets`:
 
 ```yaml
 services: >-
-  [{"service":"api","context":".","dockerfile":"api/Dockerfile"},
-   {"service":"web","context":".","dockerfile":"web/Dockerfile"}]
+  [{"service":"api","context":".","dockerfile":"api/Dockerfile",
+    "target":"production","buildArgs":{"NODE_ENV":"production"},
+    "platforms":["linux/amd64","linux/arm64"],"secrets":["npmrc"]},
+   {"service":"web","context":".","dockerfile":"web/Dockerfile","target":"production"}]
 ```
 
-Services must already exist in groma.yaml. The workflow builds tags such as `ghcr.io/owner/repository-api:<commit>`, then deploys `ghcr.io/owner/repository-api@sha256:...`. Prebuilt dependencies such as a database are omitted from the build definitions and keep their configured images. Production still requires digests for those dependencies.
+Contexts and Dockerfiles must remain inside the checked-out application repository. Targets, build-argument names and platform values are validated before the build starts.
 
-Build contexts and Dockerfiles must stay inside the checked-out app repository. The workflow supports one Dockerfile build per service and the runner's default Linux architecture. ARM droplets, custom build arguments/secrets or multi-platform builds require a reviewed extension; don't assume an amd64 image runs on ARM.
+Build-secret **values do not belong in the services JSON**. If a definition requests secret IDs, map the values through the reusable workflow secret `BUILD_SECRETS` as a JSON object, for example `{"npmrc":"..."}` from an environment/repository secret. The workflow writes only requested values to temporary `0600` files, passes them to BuildKit using `secret-files`, and removes the files in an `always()` cleanup step. Missing requested IDs fail the build.
 
-## Protected production
+QEMU/Buildx are configured so multi-platform builds can be requested explicitly. Omit `platforms` to retain the runner/default-platform behavior.
 
-Copy [the production caller](../examples/workflows/deploy-production.yml). Its manual dispatch starts a build; the deploy job then waits for the production environment's independent approval. All services in the effective config must meet production validation. `profile: production` cannot be deployed through dev/staging, and a production workflow cannot deploy a non-production profile.
+## Production image validation
 
-Both jobs can run from trusted application code, so restrict who can modify callers and toolkit refs. The workflow is not a boundary against repository administrators who can edit environment protection.
+The build job records `service -> image@sha256:...` artifacts. Deployment supplies those digests with `--image`, which takes precedence over a local `deploy/images.lock.yaml`. This means the reusable CI workflow can deploy freshly built production images while developers can still validate a committed production overlay locally with `groma pin`.
 
-Deployments to the same caller target/config/environment are serialized; in-progress deployments are not canceled. The host-wide GROMa lock provides additional coordination across applications and repositories. SSH keys are written to a temporary 0700 directory with 0600 files, supplied through a dedicated OpenSSH config, omitted from the child process environment, and removed in a finally block. Registry write credentials are used only in build jobs and are never transmitted to the droplet.
+Prebuilt dependencies that are not built by the workflow must already satisfy the effective production configuration, either through immutable image references or the checked-in GROMa image lock.
 
-## Review failures
+## Automatic dev and protected production
 
-- A failed plan or image resolution prevents deployment.
-- Service removals and storage changes require an explicit local reviewed deployment; the automated workflow does not grant those override flags.
-- A public verification failure makes the job fail while keeping the new active release. Inspect the report and retry `groma verify`; rollback is an explicit operation.
-- Changing the app's database schema is outside this workflow. Use backward-compatible migrations and tested backups before production.
+Copy [the dev caller example](../examples/workflows/deploy-dev.yml) for push-to-main development deployments. Copy [the production caller](../examples/workflows/deploy-production.yml) for manual production dispatch. Production deployment still runs in the protected GitHub environment and requires the configured independent reviewer policy.
 
-You can test the workflow's structure and policy helpers locally, but its actual build, GHCR push, environment gate and SSH deployment require the configured application repository and host. Unit tests do not certify these external settings.
+Deployments to the same caller target/config/environment are serialized and are not canceled in progress. The host-wide GROMa lock adds coordination across applications and repositories. SSH key material is kept in a temporary private directory, supplied through a dedicated OpenSSH config, removed from the child environment and deleted afterward.
+
+## Failure behavior
+
+- Invalid build paths/targets/arguments/platforms/secrets fail before image build.
+- A missing production reviewer policy fails closed.
+- A failed image resolution or deployment plan prevents deployment.
+- Service removals and storage changes still require an explicit reviewed local deployment; CI does not grant those override flags.
+- Public verification failure makes the job fail while retaining the new active release for diagnosis.
+
+Unit tests cover the workflow contract, but GHCR, GitHub environment gates, SSH and the actual target host remain external acceptance concerns.
