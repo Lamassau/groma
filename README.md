@@ -1,68 +1,120 @@
 # GROMa
 
-Deploy containerized applications to a **plain Linux server with Docker Compose**, or to an existing **Kubernetes cluster**. DigitalOcean droplets do not need Kubernetes for the Compose target.
+GROMa is a deployment toolkit for containerized applications.
 
-GROMa provides a versioned application schema, an installable CLI, CDK8s library exports, validation, manifest generation, SSH deployment, HTTPS routing, and release recovery. It does not create cloud servers, build/push application images, register domains, or manage your DNS account.
+It gives you one application definition — `groma.yaml` — and can deploy it to either:
 
-## Feature matrix
+- **a normal Linux server with Docker Compose**, or
+- **an existing Kubernetes cluster**.
 
-| Capability | Compose target | Kubernetes target | Legacy `src/lib` chart path |
-| --- | --- | --- | --- |
-| `init` / `validate` / `synth` | ✅ | ✅ | N/A (TypeScript chart code) |
-| `doctor` / `plan` / `deploy` / `verify` | ✅ | ✅ | N/A |
-| `apps` / `start` / `stop` / `prune` | ✅ | ❌ | N/A |
-| `rollback` | ✅ release-directory rollback | ✅ deployment rollout undo | N/A |
-| Public HTTPS routing | ✅ Caddy on host | ✅ Ingress | via your chart choices |
-| Generic renderer autoscaling/PDB/netpol/backup | ❌ | ❌ | ✅ available as constructs |
+For a DigitalOcean Droplet, **you do not need Kubernetes**.
 
-## Recommended path by use case
+If you are deploying development, staging, demos, or several small applications to one inexpensive server, start with the **Compose target**.
 
-- Single-host low-cost dev/staging: Compose target CLI (`groma.yaml` + host setup + deploy workflow).
-- Kubernetes app with standard Deployment/Service/Ingress/PVC needs: Kubernetes target CLI (`groma.yaml`).
-- Kubernetes platform teams requiring custom CRDs/policies/topology controls: library/construct path in `src/lib`.
-- Existing `.devenv` users: continue legacy path first, then migrate intentionally using [migration notes](docs/migration.md).
+> GROMa deploys applications. It does not create cloud servers, register domains, change DNS records, or provision managed databases.
 
-## Quick start
+---
 
-Requirements on your workstation: Node.js 20+, pnpm 10.30.3, and OpenSSH. Docker is needed on the target server, not your workstation. Kubernetes commands require local `kubectl`.
+## Choose your deployment target
 
-From this repository:
+| Your situation | Use |
+| --- | --- |
+| One low-cost DigitalOcean Droplet | **Compose** |
+| Several dev/staging apps sharing one server | **Compose** |
+| Demo / proof of concept | **Compose** |
+| You already operate Kubernetes | **Kubernetes** |
+| You need Kubernetes replicas or scheduling | **Kubernetes** |
+| You need custom CRDs, HPA/PDB/network-policy constructs | **GROMa CDK8s library** |
+
+**Not sure? Use Compose.**
+
+---
+
+## What GROMa manages
+
+### Compose target
+
+GROMa can:
+
+- validate your deployment configuration;
+- generate Docker Compose and Caddy configuration;
+- prepare a supported Ubuntu host;
+- check remote prerequisites;
+- preview deployment changes;
+- deploy over SSH;
+- lock image tags to immutable digests;
+- configure HTTPS with Caddy;
+- verify DNS, TLS, and application health;
+- show all GROMa-managed apps on a shared host;
+- start, stop, inspect, prune, and roll back releases.
+
+### Kubernetes target
+
+GROMa can generate and apply standard:
+
+- Deployments;
+- Services;
+- Ingress resources;
+- persistent volume claims.
+
+GROMa does **not** install Kubernetes, an ingress controller, cert-manager, cloud infrastructure, or CRDs.
+
+---
+
+# Quick start: deploy to a Linux server
+
+This is the recommended starting point for a new user.
+
+## 1. Requirements
+
+### Workstation
+
+- Node.js 20+
+- pnpm 10.30.3
+- OpenSSH
+
+### Target server
+
+Use Ubuntu **22.04 LTS** or **24.04 LTS**.
+
+Before GROMa can connect, you need an SSH account that:
+
+- already exists;
+- uses SSH-key authentication;
+- has a verified host key in your local `known_hosts`;
+- can run passwordless `sudo` during initial host setup.
+
+GROMa never disables SSH host-key checking and never creates SSH users.
+
+---
+
+## 2. Build the GROMa CLI
+
+From the GROMa repository:
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm run compile
+node build/cli.js --help
+```
+
+When packaged or installed globally, the same CLI is available as:
+
+```bash
+groma --help
+```
+
+---
+
+## 3. Create `groma.yaml`
+
+You can use the guided initializer:
+
+```bash
 node build/cli.js init --name my-app
 ```
 
-Edit `groma.yaml`: set the actual SSH target, application image, container port, healthcheck, domain and an unused loopback host port. The generated example is an Nginx demonstration, not your product's image.
-
-```bash
-node build/cli.js validate
-node build/cli.js synth
-node build/cli.js host setup > host-setup.sh
-```
-
-Review the setup script. The optional execution mode changes the host, installs software, configures Caddy, grants Docker group membership, and enables UFW. Use it only on a suitable Ubuntu 22.04/24.04 LTS server:
-
-```bash
-node build/cli.js host setup --execute --yes --expect-target deploy@your-droplet.example.com
-```
-
-The SSH account must already exist, have a verified host key in `known_hosts`, and be able to run passwordless sudo. GROMa never creates users, disables host-key verification, or modifies SSH authentication. See [host setup and security](docs/compose-deployment.md) before running this command.
-
-Point the domain's DNS A record at your droplet. Set an AAAA record only if IPv6 is configured correctly. Allow TCP 80/443 through the DigitalOcean firewall, and allow your configured SSH port from your administration addresses.
-
-```bash
-node build/cli.js doctor
-node build/cli.js plan
-node build/cli.js deploy --yes --expect-target deploy@your-droplet.example.com
-node build/cli.js status
-node build/cli.js logs web
-```
-
-Caddy provisions and renews HTTPS certificates when DNS and network access are correct. Deployment now verifies public DNS, certificate validity and the configured HTTP health endpoint after containers are ready. Verification failures return a nonzero exit code while retaining the deployed release; see [operations](docs/operations.md).
-
-## Configuration
+Or create the file yourself:
 
 ```yaml
 schemaVersion: 1
@@ -70,84 +122,422 @@ name: my-app
 environment: dev
 profile: shared-dev
 target: compose
+
 host:
-  ssh: deploy@your-droplet.example.com
+  ssh: deploy@dev.example.com
+
 services:
   web:
-    image: ghcr.io/your-org/my-app:your-release
+    image: ghcr.io/your-org/my-app:latest
     port: 3000
-    healthcheck: [node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+
+    healthcheck:
+      - node
+      - -e
+      - "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
     route:
-      domain: dev.example.com
+      domain: my-app-dev.example.com
       hostPort: 18080
+
     resources:
       cpu: 0.5
       memory: 256Mi
 ```
 
-Only services declaring a route publish a port, bound to `127.0.0.1`. Caddy runs on the host and forwards requests to these loopback ports. Every app/environment has its own Compose project, network and named volumes. Databases stay on the application's network. All projects still share one host and failure domain; this is not a security boundary against a hostile workload.
+Replace the example values with your real application settings.
 
-- `command`: argument array overriding the image CMD; image ENTRYPOINT remains intact.
-- `environment`: **non-sensitive strings**; `$` characters are preserved literally in Compose. Do not put secrets here.
-- `healthcheck`: executable argument array available inside the image; no implicit shell. Use `sh -c` explicitly if necessary. Without a check, Compose can only verify that a container is running.
-- `dependsOn`: Compose-only list; referenced services must have healthchecks. Dependency cycles are rejected.
-- `secrets`: selected references mounted at `/run/secrets/<name>`; see the [configuration reference](docs/configuration.md).
-- `volumes`: explicit `persistent` or `ephemeral` mode. Persistent volumes are never deleted by deployment or rollback.
-- Unknown settings, unsupported target options and malformed values fail validation instead of being silently ignored.
+### The four values new users most often get wrong
 
-See [examples/compose](examples/compose), [examples/kubernetes](examples/kubernetes), and [configuration reference](docs/configuration.md).
+**`image`**
+The container image to deploy. GROMa does not build this image during a normal CLI deployment.
 
-## Commands
+**`port`**
+The port your application listens on **inside the container**.
 
-| Command | Behavior |
+**`healthcheck`**
+A command executed **inside the container**. Every executable in the command must exist in the image.
+
+**`route.hostPort`**
+A unique loopback port used between Caddy and the container. It is not exposed publicly.
+
+Only services with a `route` are publicly reachable.
+
+---
+
+## 4. Validate locally
+
+Before touching the server:
+
+```bash
+node build/cli.js validate --config groma.yaml
+node build/cli.js synth --config groma.yaml
+```
+
+`validate` checks the schema and consistency.
+
+`synth` generates the underlying Compose/Caddy or Kubernetes manifests so you can inspect them.
+
+---
+
+## 5. Prepare the server
+
+First generate the setup script without changing anything:
+
+```bash
+node build/cli.js host setup --config groma.yaml > host-setup.sh
+```
+
+Review `host-setup.sh`.
+
+To execute the reviewed setup remotely:
+
+```bash
+node build/cli.js host setup \
+  --config groma.yaml \
+  --execute \
+  --yes \
+  --expect-target deploy@dev.example.com
+```
+
+Host setup can install and configure:
+
+- Docker Engine;
+- Docker Compose;
+- Caddy;
+- Python 3;
+- GROMa directories;
+- UFW rules for SSH, HTTP, and HTTPS.
+
+Use this on a new or dedicated server. Read [Plain-host / DigitalOcean deployment](docs/compose-deployment.md) before running it on an existing multi-purpose host.
+
+---
+
+## 6. Configure DNS
+
+GROMa does not modify DNS.
+
+Create an **A record** for the public application hostname:
+
+```text
+my-app-dev.example.com -> YOUR_DROPLET_IPV4
+```
+
+Only create an AAAA record when IPv6 is configured correctly.
+
+Allow inbound traffic to:
+
+- your SSH port;
+- TCP 80;
+- TCP 443.
+
+Caddy obtains and renews HTTPS certificates after public DNS points to the server.
+
+---
+
+## 7. Check the server
+
+```bash
+node build/cli.js doctor --config groma.yaml
+```
+
+Fix any reported problem before deploying.
+
+---
+
+## 8. Preview the deployment
+
+```bash
+node build/cli.js plan --config groma.yaml
+```
+
+`plan` is read-only.
+
+For Compose deployments it resolves candidate image digests and compares the proposed release with the currently active successful release.
+
+---
+
+## 9. Deploy
+
+```bash
+node build/cli.js deploy \
+  --config groma.yaml \
+  --yes \
+  --expect-target deploy@dev.example.com
+```
+
+GROMa will:
+
+1. validate the configuration;
+2. check the host;
+3. resolve images to immutable digests;
+4. create a release directory;
+5. pull images;
+6. start containers;
+7. wait for health checks;
+8. configure the Caddy route;
+9. make the release active;
+10. verify public DNS, HTTPS, certificate validity, and the configured health URL.
+
+A public verification failure returns a failure status but keeps the deployed release active. This avoids automatically reversing an application after a temporary DNS or ACME delay.
+
+---
+
+## 10. Inspect and operate the app
+
+```bash
+node build/cli.js status --config groma.yaml
+node build/cli.js logs web --config groma.yaml
+node build/cli.js verify --config groma.yaml
+```
+
+See every GROMa-managed app on a shared host:
+
+```bash
+node build/cli.js apps --host deploy@dev.example.com
+```
+
+---
+
+# Common commands
+
+| Command | Purpose |
 | --- | --- |
-| `init` | Guided setup in a terminal, or `--no-interactive` for scripts; never overwrites files. |
-| `validate` | Offline schema and consistency checks. |
-| `synth` | Generate manifests without accessing a target. |
-| `doctor` | Check target access and core runtime prerequisites. |
-| `plan` | Digest-aware Compose service/routing/storage preview or live `kubectl diff`. |
-| `deploy` | Review plan, apply locked images, wait for readiness, and verify public DNS/TLS/health. |
-| `verify` | Check public DNS, HTTPS certificates and health URLs independently. |
-| `apps` | Host-wide apps, URLs, image versions, health and resource usage. |
-| `start` / `stop` | Operate existing active-release containers without pulling images or deleting volumes. |
-| `prune` | Preview/execute safe old-release cleanup; protect current, previous and in-use releases. |
-| `status` | Inspect the active application's services. |
-| `logs [service]` | Last 100 lines. Application logs may contain sensitive data. |
-| `rollback` | Compose: restore previous release config and locked images. Kubernetes: rollout undo each service deployment. Neither mode reverts database contents or secret file contents. |
-| `host setup` | Print an Ubuntu setup script; remote execution requires `--execute --yes --expect-target`. |
+| `groma init` | Create a starter configuration or guided project. |
+| `groma validate` | Validate configuration locally. |
+| `groma synth` | Generate deployment manifests locally. |
+| `groma doctor` | Check remote prerequisites. |
+| `groma plan` | Preview deployment changes. |
+| `groma deploy` | Deploy the application. |
+| `groma verify` | Re-check public DNS, TLS, and health. |
+| `groma status` | Inspect the active application. |
+| `groma logs [service]` | Show the last 100 log lines. |
+| `groma apps` | List GROMa-managed apps on a Compose host. |
+| `groma stop` | Stop the active Compose release without deleting persistent volumes. |
+| `groma start` | Start the existing active Compose release. |
+| `groma rollback` | Restore the previous release. |
+| `groma prune` | Preview or remove old release directories. |
+| `groma host setup` | Generate or execute Ubuntu host setup. |
 
-Common options: `--config PATH`, `--env NAME`, `--out PATH`, `--json`, repeatable `--image SERVICE=IMAGE`. See [operations](docs/operations.md) for all six improvements and [GitHub Actions deployment](docs/github-actions.md) for automated dev/protected production. `--json` wraps command output in one object for automation (except the intentionally textual `init`, help and host setup commands).
-
-`--env staging` requires `environments/staging.yaml` alongside your base config. Objects merge recursively; arrays replace. No overlay is guessed. The environment name and resource profile are separate, so staging can use `shared-dev`.
-
-## Kubernetes and existing users
+Mutating commands require explicit target confirmation:
 
 ```bash
-node build/cli.js init --target kubernetes --name my-app --config groma-k8s.yaml
-node build/cli.js validate --config groma-k8s.yaml
+--yes --expect-target deploy@dev.example.com
 ```
 
-Set `kubernetes.context`, optional ingress class/TLS secret, and service images. The CLI generates CDK8s API objects for arbitrary services, optional PVCs, existing Secret mounts and standard Ingress. It never installs controllers or a cluster. Kubernetes does not support Compose startup ordering; services must retry dependency connections. Kubernetes apply does not prune removed resources automatically.
+That guard helps prevent accidental changes to the wrong server or Kubernetes context.
 
-The existing `FullStackChart`, database/cache/backup constructs and `.devenv` builder remain exported. Their `pnpm synth:*` commands retain the legacy layout. See [migration notes](docs/migration.md); these legacy constructs and the new generic renderer have different feature sets. The new generic renderer does not implicitly enable legacy autoscaling or backup jobs.
+---
 
-## Distribution and verification
+# Environment overlays
+
+Keep a base `groma.yaml`, then add environment-specific changes under:
+
+```text
+environments/
+  staging.yaml
+  production.yaml
+```
+
+Example:
+
+```yaml
+# environments/staging.yaml
+profile: shared-dev
+
+host:
+  ssh: deploy@staging.example.com
+
+services:
+  web:
+    route:
+      domain: staging.example.com
+      hostPort: 18081
+```
+
+Use it with:
 
 ```bash
-pnpm run build
-pnpm test --runInBand
-pnpm run test:agent
-pnpm run compile
-pnpm pack
-# Install the resulting .tgz in another project, or globally:
-npm install -g ./lamassau-groma-0.1.0.tgz
-groma --help
+groma validate --env staging
+groma plan --env staging
+groma deploy --env staging \
+  --yes \
+  --expect-target deploy@staging.example.com
 ```
 
-The package remains private to prevent accidental registry publication; a local/release tarball is installable without copying source files. Releases attach the package and complete, non-secret example manifests.
+Objects merge recursively. Arrays replace the base array.
 
-CI checks TypeScript, regression tests, example synthesis, package contents, and starts two disposable Compose projects. Run `pnpm run test:integration` only with a disposable local Docker daemon; it never uses SSH. Local shell transaction tests simulate Docker/Caddy and are not a substitute for a live droplet acceptance test.
+To remove a service in an overlay:
 
-## Scope
+```yaml
+services:
+  worker: null
+```
 
-The Compose path is intended first for low-cost shared dev/staging. Production profile adds digest and healthcheck requirements; it does not make a single host highly available, provision off-host backups, verify restores, or install monitoring. Schedule and verify database backups separately before storing production data. There is no automatic database migration or data rollback. Updates may briefly interrupt service.
+See [Configuration reference](docs/configuration.md).
+
+---
+
+# Secrets
+
+Do **not** put passwords, API keys, SSH keys, or other secret values in `groma.yaml`.
+
+For Compose, GROMa references an existing secret file on the host:
+
+```yaml
+secrets:
+  db-password:
+    file: /opt/groma-secrets/my-app/db-password
+
+services:
+  database:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db-password
+    secrets:
+      - db-password
+```
+
+The file must already exist on the server.
+
+For Kubernetes, GROMa references an existing Kubernetes Secret.
+
+See [Secrets and databases](docs/configuration.md#secrets-and-databases).
+
+---
+
+# Persistent and disposable data
+
+Persistent volume:
+
+```yaml
+volumes:
+  - name: data
+    mount: /var/lib/postgresql/data
+    mode: persistent
+```
+
+Disposable dev/test volume:
+
+```yaml
+volumes:
+  - name: data
+    mount: /tmp/data
+    mode: ephemeral
+```
+
+Persistent Compose named volumes are not deleted during deployment or rollback.
+
+GROMa does **not** roll back database contents or database migrations. Use backward-compatible migrations and a separate, tested backup/restore process.
+
+---
+
+# Kubernetes quick start
+
+Use this path only when you already have a Kubernetes cluster and working `kubectl` access.
+
+```bash
+groma init \
+  --target kubernetes \
+  --name my-app \
+  --config groma-k8s.yaml
+```
+
+Example:
+
+```yaml
+schemaVersion: 1
+name: my-app
+environment: dev
+profile: shared-dev
+target: kubernetes
+
+kubernetes:
+  context: my-cluster
+  ingressClass: nginx
+
+services:
+  web:
+    image: ghcr.io/your-org/my-app:latest
+    replicas: 2
+    port: 3000
+    healthcheck:
+      - node
+      - healthcheck.js
+    route:
+      domain: dev.example.com
+```
+
+Then:
+
+```bash
+groma validate --config groma-k8s.yaml
+groma doctor --config groma-k8s.yaml
+groma plan --config groma-k8s.yaml
+groma deploy \
+  --config groma-k8s.yaml \
+  --yes \
+  --expect-target my-cluster
+```
+
+---
+
+# GitHub Actions deployment
+
+GROMa includes a reusable GitHub Actions workflow for Compose/Droplet deployments.
+
+It can:
+
+- build application images;
+- push them to GHCR;
+- deploy immutable digests;
+- use GitHub deployment environments;
+- enforce protected production approval;
+- run GROMa deployment verification.
+
+See [GitHub Actions deployment](docs/github-actions.md).
+
+---
+
+# Production expectations
+
+The `production` profile adds stricter validation, including immutable image digests and health checks.
+
+It does **not** make a single server highly available.
+
+A single-host deployment still has one host failure domain. GROMa does not automatically provide:
+
+- multi-node high availability;
+- off-host database backups;
+- restore testing;
+- monitoring or alerting;
+- managed databases;
+- automatic DNS management;
+- zero-downtime database migrations.
+
+Compose is especially useful for economical dev/staging and smaller workloads. Add appropriate infrastructure when production reliability requirements demand it.
+
+---
+
+# Documentation
+
+Start here and then move to the focused guide you need:
+
+- [Documentation index](docs/README.md)
+- [Plain-host / DigitalOcean deployment](docs/compose-deployment.md)
+- [Configuration reference](docs/configuration.md)
+- [Operations](docs/operations.md)
+- [GitHub Actions deployment](docs/github-actions.md)
+- [Migration from the original `.infra` layout](docs/migration.md)
+- [Compose examples](examples/compose)
+- [Kubernetes examples](examples/kubernetes)
+
+---
+
+# Legacy CDK8s library
+
+Existing users can continue using `FullStackChart`, related constructs, and the original `.devenv` workflow.
+
+For new projects, prefer the `groma.yaml` CLI workflow unless you specifically need the advanced Kubernetes constructs exposed by the library.
+
+See [Migration](docs/migration.md).
