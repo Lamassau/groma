@@ -1,9 +1,12 @@
 {
   "name": "@lamassau/groma",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": false,
   "description": "Deploy containerized applications to Compose hosts or Kubernetes",
-  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org/"},
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "import": "echo 'cdk8s import disabled: using committed src/lib/k8s.ts'",
     "build": "tsc --noEmit",
